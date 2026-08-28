@@ -1,12 +1,12 @@
-"""Run one local chat request through Ollama."""
+"""Run one user request through the local manual agent loop."""
 
-from llm.ollama_client import chat
+from agent import run_agent
 
 
 def main() -> None:
-    """Read one prompt, send it to Ollama, and print the response."""
+    """Read one prompt, run the agent, and print its final answer."""
     prompt = input("You: ")
-    answer = chat([{"role": "user", "content": prompt}])
+    answer = run_agent(prompt)
     print(answer)
 
 
