@@ -6,7 +6,7 @@ import pytest
 
 import agent.agent as agent_module
 from agent.state import MAX_STEPS, AgentState
-from tools import Tool, ToolRegistry
+from tools import Tool, ToolRegistry, word_count
 
 
 def test_agent_state_starts_with_explicit_defaults() -> None:
@@ -115,6 +115,41 @@ def test_run_agent_shows_registered_tools_and_dispatches_model_selection(
     assert calls[1][-1]["content"] == (
         "Observation: Tool repeat returned: hellohello. Decide what to do next."
     )
+
+
+def test_run_agent_selects_filesystem_tools_through_generic_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses: Iterator[str] = iter(
+        [
+            '{"type": "action", "tool": "list_files", "arguments": {"path": "."}}',
+            '{"type": "action", "tool": "read_file", "arguments": {"path": "README.md"}}',
+            '{"type": "final", "answer": "This repository explores a local agent."}',
+        ]
+    )
+    calls: list[list[dict[str, str]]] = []
+
+    def fake_chat(messages: list[dict[str, str]]) -> str:
+        calls.append([message.copy() for message in messages])
+        return next(responses)
+
+    monkeypatch.setattr(agent_module, "chat", fake_chat)
+
+    answer = agent_module.run_agent("Explain what this repository does.")
+
+    assert answer == "This repository explores a local agent."
+    assert len(calls) == 3
+    assert '"name": "list_files"' in calls[0][0]["content"]
+    assert '"name": "read_file"' in calls[0][0]["content"]
+    assert '"name": "word_count"' in calls[0][0]["content"]
+    assert "Tool list_files returned:" in calls[1][-1]["content"]
+    assert "README.md" in calls[1][-1]["content"]
+    assert "Tool read_file returned:" in calls[2][-1]["content"]
+    assert "agentic software engineering assistant" in calls[2][-1]["content"]
+
+
+def test_existing_word_count_behavior_remains_available() -> None:
+    assert word_count("one two three") == 3
 
 
 def test_run_agent_stops_at_max_steps(monkeypatch: pytest.MonkeyPatch) -> None:
