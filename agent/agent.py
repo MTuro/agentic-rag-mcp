@@ -5,24 +5,29 @@ from typing import Any
 
 from agent.state import MAX_STEPS, AgentState
 from llm.ollama_client import chat
+from tools import WORD_COUNT_TOOL, ToolRegistry
 
 
-SYSTEM_PROMPT = """You are an educational agent that must reply with one JSON object only.
+BASE_SYSTEM_PROMPT = """You are an educational agent that must reply with one JSON object only.
 
 Choose exactly one of these decisions:
 1. Give the final answer:
    {"type": "final", "answer": "your answer"}
-2. Count the words in text:
-   {"type": "action", "tool": "word_count", "input": "text to count"}
+2. Call one available tool:
+   {"type": "action", "tool": "tool_name", "arguments": {"argument_name": "value"}}
 
-Use word_count when the user asks for an exact word count. After receiving an
-observation, use it to produce a final answer. Do not wrap JSON in Markdown.
+Choose tools from the definitions below. Use each tool's argument schema to build
+the arguments object. After receiving an observation, use it to decide whether to
+call another tool or produce a final answer. Do not wrap JSON in Markdown.
 """
 
+DEFAULT_TOOL_REGISTRY = ToolRegistry([WORD_COUNT_TOOL])
 
-def _word_count(text: str) -> int:
-    """Count whitespace-separated words for the educational action."""
-    return len(text.split())
+
+def _build_system_prompt(tool_registry: ToolRegistry) -> str:
+    """Build instructions from the tools currently available to the agent."""
+    definitions = json.dumps(tool_registry.model_definitions(), indent=2)
+    return f"{BASE_SYSTEM_PROMPT}\nAvailable tools:\n{definitions}"
 
 
 def _parse_decision(response: str) -> dict[str, Any]:
@@ -38,24 +43,30 @@ def _parse_decision(response: str) -> dict[str, Any]:
     return decision
 
 
-def _execute_action(decision: dict[str, Any]) -> str:
-    """Execute the single educational action available in this milestone."""
+def _execute_action(decision: dict[str, Any], tool_registry: ToolRegistry) -> str:
+    """Execute a model-selected tool through the generic registry."""
     tool_name = decision.get("tool")
-    if tool_name != "word_count":
-        raise ValueError(f"Unknown tool: {tool_name!r}.")
+    if not isinstance(tool_name, str) or not tool_name:
+        raise ValueError("An action decision requires a non-empty tool name.")
 
-    tool_input = decision.get("input")
-    if not isinstance(tool_input, str):
-        raise ValueError("The word_count action requires a string input.")
+    arguments = decision.get("arguments")
+    if not isinstance(arguments, dict):
+        raise ValueError("An action decision requires an arguments object.")
 
-    return f"word_count returned {_word_count(tool_input)}"
+    result = tool_registry.execute(tool_name, arguments)
+    return f"Tool {tool_name} returned: {result}"
 
 
-def run_agent(prompt: str, *, max_steps: int = MAX_STEPS) -> str:
+def run_agent(
+    prompt: str,
+    *,
+    max_steps: int = MAX_STEPS,
+    tool_registry: ToolRegistry = DEFAULT_TOOL_REGISTRY,
+) -> str:
     """Run the manual decision-action-observation loop for one user prompt."""
     state = AgentState(
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": _build_system_prompt(tool_registry)},
             {"role": "user", "content": prompt},
         ],
         max_steps=max_steps,
@@ -75,7 +86,7 @@ def run_agent(prompt: str, *, max_steps: int = MAX_STEPS) -> str:
             return answer
 
         if decision_type == "action":
-            observation = _execute_action(decision)
+            observation = _execute_action(decision, tool_registry)
             state.observations.append(observation)
             state.messages.append(
                 {

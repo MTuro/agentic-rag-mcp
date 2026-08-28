@@ -6,6 +6,7 @@ import pytest
 
 import agent.agent as agent_module
 from agent.state import MAX_STEPS, AgentState
+from tools import Tool, ToolRegistry
 
 
 def test_agent_state_starts_with_explicit_defaults() -> None:
@@ -40,7 +41,7 @@ def test_run_agent_feeds_action_observation_back_to_model(
 ) -> None:
     responses: Iterator[str] = iter(
         [
-            '{"type": "action", "tool": "word_count", "input": "one two three"}',
+            '{"type": "action", "tool": "word_count", "arguments": {"text": "one two three"}}',
             '{"type": "final", "answer": "The text contains 3 words."}',
         ]
     )
@@ -64,7 +65,7 @@ def test_run_agent_feeds_action_observation_back_to_model(
     assert answer == "The text contains 3 words."
     assert len(calls) == 2
     assert created_states[0].current_step == 2
-    assert created_states[0].observations == ["word_count returned 3"]
+    assert created_states[0].observations == ["Tool word_count returned: 3"]
     assert created_states[0].messages == calls[1] + [
         {
             "role": "assistant",
@@ -74,8 +75,46 @@ def test_run_agent_feeds_action_observation_back_to_model(
     assert calls[1][-2]["role"] == "assistant"
     assert calls[1][-1] == {
         "role": "user",
-        "content": "Observation: word_count returned 3. Decide what to do next.",
+        "content": "Observation: Tool word_count returned: 3. Decide what to do next.",
     }
+
+
+def test_run_agent_shows_registered_tools_and_dispatches_model_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses: Iterator[str] = iter(
+        [
+            '{"type": "action", "tool": "repeat", "arguments": {"text": "hello"}}',
+            '{"type": "final", "answer": "hellohello"}',
+        ]
+    )
+    calls: list[list[dict[str, str]]] = []
+
+    def fake_chat(messages: list[dict[str, str]]) -> str:
+        calls.append([message.copy() for message in messages])
+        return next(responses)
+
+    repeat_tool = Tool(
+        name="repeat",
+        description="Repeat text twice.",
+        argument_schema={
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+        },
+        implementation=lambda text: text * 2,
+    )
+    registry = ToolRegistry([repeat_tool])
+    monkeypatch.setattr(agent_module, "chat", fake_chat)
+
+    answer = agent_module.run_agent("Repeat hello", tool_registry=registry)
+
+    assert answer == "hellohello"
+    assert '"name": "repeat"' in calls[0][0]["content"]
+    assert '"description": "Repeat text twice."' in calls[0][0]["content"]
+    assert calls[1][-1]["content"] == (
+        "Observation: Tool repeat returned: hellohello. Decide what to do next."
+    )
 
 
 def test_run_agent_stops_at_max_steps(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -84,7 +123,10 @@ def test_run_agent_stops_at_max_steps(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_chat(messages: list[dict[str, str]]) -> str:
         nonlocal call_count
         call_count += 1
-        return '{"type": "action", "tool": "word_count", "input": "keep going"}'
+        return (
+            '{"type": "action", "tool": "word_count", '
+            '"arguments": {"text": "keep going"}}'
+        )
 
     monkeypatch.setattr(agent_module, "chat", fake_chat)
 
@@ -99,8 +141,11 @@ def test_run_agent_stops_at_max_steps(monkeypatch: pytest.MonkeyPatch) -> None:
     [
         ("not JSON", "invalid JSON"),
         ('{"type": "other"}', "Unknown decision type"),
-        ('{"type": "action", "tool": "missing", "input": "text"}', "Unknown tool"),
-        ('{"type": "action", "tool": "word_count"}', "requires a string input"),
+        (
+            '{"type": "action", "tool": "missing", "arguments": {"text": "text"}}',
+            "Unknown tool",
+        ),
+        ('{"type": "action", "tool": "word_count"}', "requires an arguments object"),
         ('{"type": "final", "answer": ""}', "requires a non-empty answer"),
     ],
 )
