@@ -45,6 +45,14 @@ def test_read_file_returns_utf8_text(tmp_path: Path) -> None:
     assert read_file("README.md", project_root=tmp_path) == "Olá, filesystem!"
 
 
+def test_read_file_accepts_path_inside_configured_root(tmp_path: Path) -> None:
+    project_root = tmp_path / "configured-project"
+    project_root.mkdir()
+    (project_root / "inside.txt").write_text("inside", encoding="utf-8")
+
+    assert read_file("inside.txt", project_root=project_root) == "inside"
+
+
 def test_read_file_rejects_missing_file(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError, match="does not exist"):
         read_file("missing.txt", project_root=tmp_path)

@@ -5,7 +5,13 @@ from typing import Any
 
 from agent.state import MAX_STEPS, AgentState
 from llm.ollama_client import chat
-from tools import LIST_FILES_TOOL, READ_FILE_TOOL, WORD_COUNT_TOOL, ToolRegistry
+from tools import (
+    LIST_FILES_TOOL,
+    READ_FILE_TOOL,
+    SEARCH_CODE_TOOL,
+    WORD_COUNT_TOOL,
+    ToolRegistry,
+)
 
 
 BASE_SYSTEM_PROMPT = """You are an educational agent that must reply with one JSON object only.
@@ -22,7 +28,7 @@ call another tool or produce a final answer. Do not wrap JSON in Markdown.
 """
 
 DEFAULT_TOOL_REGISTRY = ToolRegistry(
-    [WORD_COUNT_TOOL, LIST_FILES_TOOL, READ_FILE_TOOL]
+    [WORD_COUNT_TOOL, LIST_FILES_TOOL, READ_FILE_TOOL, SEARCH_CODE_TOOL]
 )
 
 

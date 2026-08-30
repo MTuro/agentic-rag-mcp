@@ -2,10 +2,8 @@
 
 from pathlib import Path
 
+from config import PROJECT_ROOT
 from tools.registry import Tool
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _resolve_project_path(path: str, *, project_root: Path = PROJECT_ROOT) -> Path:

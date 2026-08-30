@@ -141,6 +141,7 @@ def test_run_agent_selects_filesystem_tools_through_generic_registry(
     assert len(calls) == 3
     assert '"name": "list_files"' in calls[0][0]["content"]
     assert '"name": "read_file"' in calls[0][0]["content"]
+    assert '"name": "search_code"' in calls[0][0]["content"]
     assert '"name": "word_count"' in calls[0][0]["content"]
     assert "Tool list_files returned:" in calls[1][-1]["content"]
     assert "README.md" in calls[1][-1]["content"]
