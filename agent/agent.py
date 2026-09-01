@@ -6,6 +6,8 @@ from typing import Any
 from agent.state import MAX_STEPS, AgentState
 from llm.ollama_client import chat
 from tools import (
+    GIT_DIFF_TOOL,
+    GIT_STATUS_TOOL,
     LIST_FILES_TOOL,
     READ_FILE_TOOL,
     SEARCH_CODE_TOOL,
@@ -28,7 +30,14 @@ call another tool or produce a final answer. Do not wrap JSON in Markdown.
 """
 
 DEFAULT_TOOL_REGISTRY = ToolRegistry(
-    [WORD_COUNT_TOOL, LIST_FILES_TOOL, READ_FILE_TOOL, SEARCH_CODE_TOOL]
+    [
+        WORD_COUNT_TOOL,
+        LIST_FILES_TOOL,
+        READ_FILE_TOOL,
+        SEARCH_CODE_TOOL,
+        GIT_STATUS_TOOL,
+        GIT_DIFF_TOOL,
+    ]
 )
 
 

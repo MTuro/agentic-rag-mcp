@@ -6,6 +6,7 @@ import pytest
 
 import agent.agent as agent_module
 from agent.state import MAX_STEPS, AgentState
+import tools.git as git_module
 from tools import Tool, ToolRegistry, word_count
 
 
@@ -147,6 +148,52 @@ def test_run_agent_selects_filesystem_tools_through_generic_registry(
     assert "README.md" in calls[1][-1]["content"]
     assert "Tool read_file returned:" in calls[2][-1]["content"]
     assert "agentic software engineering assistant" in calls[2][-1]["content"]
+
+
+def test_run_agent_selects_git_tools_and_returns_observations_to_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses: Iterator[str] = iter(
+        [
+            '{"type": "action", "tool": "git_status", "arguments": {}}',
+            '{"type": "action", "tool": "git_diff", "arguments": {"staged": false}}',
+            '{"type": "final", "answer": "agent.py has unstaged changes."}',
+        ]
+    )
+    calls: list[list[dict[str, str]]] = []
+
+    def fake_chat(messages: list[dict[str, str]]) -> str:
+        calls.append([message.copy() for message in messages])
+        return next(responses)
+
+    monkeypatch.setattr(agent_module, "chat", fake_chat)
+    monkeypatch.setattr(
+        git_module,
+        "git_status",
+        lambda *, project_root: " M agent/agent.py",
+    )
+    monkeypatch.setattr(
+        git_module,
+        "git_diff",
+        lambda staged=False, *, project_root: (
+            "diff --git a/agent/agent.py b/agent/agent.py"
+        ),
+    )
+
+    answer = agent_module.run_agent("What changes have I made to the agent?")
+
+    assert answer == "agent.py has unstaged changes."
+    assert len(calls) == 3
+    assert '"name": "git_status"' in calls[0][0]["content"]
+    assert '"name": "git_diff"' in calls[0][0]["content"]
+    assert calls[1][-1]["content"] == (
+        "Observation: Tool git_status returned:  M agent/agent.py. "
+        "Decide what to do next."
+    )
+    assert calls[2][-1]["content"] == (
+        "Observation: Tool git_diff returned: "
+        "diff --git a/agent/agent.py b/agent/agent.py. Decide what to do next."
+    )
 
 
 def test_existing_word_count_behavior_remains_available() -> None:
