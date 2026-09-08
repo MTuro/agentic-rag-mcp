@@ -15,5 +15,6 @@ pydantic_core==2.46.4
 Pygments==2.21.0
 pytest==9.1.1
 sentence-transformers==6.0.1
+chromadb==1.5.9
 typing-inspection==0.4.4
 typing_extensions==4.16.0
