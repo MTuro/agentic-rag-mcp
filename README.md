@@ -1,110 +1,91 @@
 # agentic-rag-mcp
-An agentic software engineering assistant exploring RAG, tool calling and Model Context Protocol (MCP).
 
-## Milestone 9: standalone ChromaDB vector storage
+An educational, fully local agentic software engineering assistant exploring
+RAG, tool calling, and Model Context Protocol (MCP).
 
-Milestone 8 produces `EmbeddedChunk` objects in memory. Milestone 9 stores their
-IDs, text, metadata, and vectors in a local Chroma collection, then retrieves
-up to K nearest chunks using an already-created query vector.
+## Milestone 10: complete standalone RAG
+
+Milestones 7–9 implemented document loading, chunking, local embeddings, and
+ChromaDB separately. Milestone 10 connects them into two explicit workflows:
 
 ```text
-EmbeddedChunk objects + explicit IDs
-        -> upsert_chunks -> persistent Chroma collection -> local disk
+INGESTION
+Markdown -> Document -> Chunk -> MiniLM embedding -> ChromaDB
 
-query vector + K
-        -> query_chunks -> Chroma similarity search -> list[SearchResult]
+RETRIEVAL
+question -> MiniLM embedding -> Chroma similarity search -> Top-K chunks
 ```
 
-`rag.vector_store` contains ordinary Python functions:
+`rag.ingest.ingest_documents` recursively loads UTF-8 Markdown below the
+configured project root, creates overlapping character chunks, embeds them in
+one batch, and upserts them into a supplied Chroma collection. Each chunk uses a
+stable, readable ID such as `documents/guide.md::0`. Repeating the same
+ingestion replaces matching records instead of growing the collection.
 
-- `open_collection(project_root=PROJECT_ROOT, name="document_chunks")` opens a
-  cosine collection under `PROJECT_ROOT / "chroma_db"`. The existing path
-  containment check rejects symlink escapes. The project root must exist.
-- `upsert_chunks(collection, embedded_chunks, ids=...)` validates the entire
-  batch before writing. Reusing an ID replaces its text, metadata, and vector;
-  duplicate IDs in one batch are rejected. Because Chroma merges metadata,
-  omitted old keys are explicitly cleared in the upsert. No record is deleted.
-- `query_chunks(collection, query_vector, top_k=3)` returns `SearchResult`
-  objects containing `chunk_id`, the original chunk data, and cosine distance.
-  It preserves Chroma's result order. An empty collection returns an empty list.
+`rag.retriever.retrieve_chunks` validates and embeds one question with the same
+embedding interface, then sends its explicit vector to Chroma. It returns
+`SearchResult` values containing the ID, text, source metadata, offsets, and
+cosine distance. Smaller distance means a closer result; Top-K limits the number
+of evidence chunks returned.
 
-A **collection** groups searchable records. The **embedding** is used for
-similarity search, while stored **text** is readable evidence and **metadata**
-identifies its source and offsets. Cosine distance is `1 - cosine_similarity`:
-smaller is closer. **Top-K** is a result-count limit, not a relevance threshold.
-Chroma's index performs approximate nearest-neighbor search; tied results have
-no promised ordering.
+This milestone retrieves context only. It does not ask Qwen to generate an
+answer, expose RAG as an agent tool, or change agent behavior. Those concerns are
+kept outside the standalone pipeline so loading, indexing, and retrieval remain
+deterministic and independently testable.
 
-A persistent client writes to disk so another process can reopen the collection.
-An ephemeral client keeps records in memory and is useful for isolated tests.
-The client/path setup and validation are infrastructure; storing known vectors,
-retrieving neighbors, and reading them in a fresh process demonstrate the concept.
-
-Automatic embedding is disabled with `embedding_function=None`; both write and
-query calls supply vectors explicitly. Telemetry is disabled. No cloud database,
-paid API, or Qwen inference is involved in storage or search. Metadata paths are
-data only and are never opened by the store.
-
-The supported metadata values are strings and integers, excluding booleans.
-Vectors must be finite, nonempty, nonzero, and dimensionally compatible. Invalid
-types/values raise `TypeError`/`ValueError`; Chroma failures raise
-`VectorStoreError` with the original cause. Incompatible collection distances
-are rejected without migration or reset. Prevalidation does not promise rollback
-for database failures. Upsert uses a read followed by a write to replace metadata;
-concurrent writers to the same IDs are not coordinated in this learning milestone.
-Upsert does not remove obsolete chunks when a source document changes.
-
-The agent, ToolRegistry, existing tools, and MAX_STEPS are unchanged. This is not
-a RAG tool. General document ingestion/question retrieval belongs to Milestone 10;
-agent access to RAG belongs to Milestone 11.
-
-### Install and run on Windows
+### Run locally on Windows
 
 Use the repository-local interpreter directly:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe -m pip check
-.\.venv\Scripts\python.exe -m rag.vector_store
+.\.venv\Scripts\python.exe -m rag.ingest
+.\.venv\Scripts\python.exe -m rag.query "What happens to Markdown documents before retrieval?"
 ```
 
-The demonstration uses the existing local MiniLM model. Its first load may need
-to download model files; subsequent inference can use the local cache.
+Both commands use the persistent `document_chunks` collection under the
+Git-ignored `chroma_db/` directory. Ingestion defaults to `documents/`, a chunk
+size of 500 characters, and an overlap of 50. Optional CLI arguments are:
 
-1. Create three fixed chunks: Markdown loading, reading Markdown files, bicycles.
-2. `embed_chunks` converts them into MiniLM vectors.
-3. Store the vectors and explicit IDs in the persistent `milestone_9_demo` collection.
-4. Reopen that collection and use the first chunk's vector as the query.
-5. Print Top-K results with distances, checking that the related sentence is
-   closer than the bicycle sentence. Exact floating-point values are not fixed.
+```powershell
+.\.venv\Scripts\python.exe -m rag.ingest documents --chunk-size 500 --chunk-overlap 50
+.\.venv\Scripts\python.exe -m rag.query "How does retrieval work?" --top-k 3
+```
 
-The demo reuses its three IDs on subsequent runs. Data stays in the already
-Git-ignored `chroma_db/` directory. Automated tests use temporary roots or
-ephemeral collections, never this project's database.
+The MiniLM model is `sentence-transformers/all-MiniLM-L6-v2`. Its first load may
+need to download model files; subsequent inference can use the local cache. No
+Ollama server, hosted embedding API, paid API, or cloud vector database is used.
+
+### Runtime trace
+
+For the question `What happens to Markdown documents before retrieval?`:
+
+1. `rag.ingest` opens the project-local Chroma collection and loads MiniLM once.
+2. `load_markdown_documents` reads files such as `documents/README.md`, attaching
+   `source` and `filename` metadata.
+3. `chunk_documents` adds `chunk_index`, `start_char`, and `end_char`.
+4. `embed_chunks` requests normalized vectors for all chunks in one model call.
+5. `upsert_chunks` stores the text, metadata, explicit vector, and stable ID.
+6. `rag.query` embeds the question with MiniLM in the same vector space.
+7. `query_chunks` asks Chroma for the nearest records and returns Top-K evidence.
+8. The CLI prints ranked source, distance, metadata, and chunk text. It does not
+   generate a conversational answer.
+
+Ingestion is intentionally upsert-only. If a file disappears, becomes shorter,
+or chunking parameters change, obsolete IDs can remain. Full collection
+synchronization and deletion are outside this milestone.
 
 ### Verification
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests/test_rag_vector_store.py tests/test_rag_embeddings.py -v
+.\.venv\Scripts\python.exe -m pytest tests/test_rag_ingest.py tests/test_rag_retriever.py tests/test_rag_query.py -v
+.\.venv\Scripts\python.exe -m pytest tests/test_rag_loader.py tests/test_rag_chunking.py tests/test_rag_embeddings.py tests/test_rag_vector_store.py tests/test_rag_ingest.py tests/test_rag_retriever.py tests/test_rag_query.py -v
 .\.venv\Scripts\python.exe -m pytest -v
 .\.venv\Scripts\python.exe -m pip check
-.\.venv\Scripts\python.exe -c "import chromadb; import rag.vector_store"
-.\.venv\Scripts\python.exe -m compileall -q rag tests/test_rag_vector_store.py
-.\.venv\Scripts\python.exe -m pytest tests/test_rag_vector_store.py -k persistence -v
-.\.venv\Scripts\python.exe -m rag.vector_store
+.\.venv\Scripts\python.exe -c "import rag.ingest; import rag.retriever; import rag.query"
+.\.venv\Scripts\python.exe -m compileall -q rag tests
 ```
 
-Tests use synthetic vectors and a fake encoder for deterministic Milestone 8
-integration, without downloading MiniLM or calling Qwen. Persistence is tested
-with separate writer and reader processes using the interpreter running pytest.
-
-For real agent regression, run `.\.venv\Scripts\python.exe main.py` and enter:
-
-> Read rag/vector_store.py and explain how it stores embeddings and retrieves
-> Top-K chunks. Base your answer on the code; do not claim to have queried the
-> database.
-
-Qwen should select existing repository-inspection tools and explain the code.
-This checks code inspection, not Qwen access to Chroma. Run the command again with
-`Say hello in one short sentence.` as a direct-answer control. Judge behavior,
-not exact wording, and report unavailable integrations separately from passing tests.
+Automated RAG tests use deterministic fake encoders and real temporary or
+ephemeral Chroma collections. They do not download MiniLM, contact Ollama, or
+write to the repository's persistent `chroma_db/` directory.

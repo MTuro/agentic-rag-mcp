@@ -1,4 +1,4 @@
-"""Standalone document loading and text chunking for the RAG pipeline."""
+"""Standalone loading, indexing, and retrieval for the local RAG pipeline."""
 
 from rag.chunking import Chunk, chunk_documents, chunk_text
 from rag.loader import Document, load_markdown_documents

@@ -26,7 +26,7 @@ class EmbeddedChunk:
     vector: list[float]
 
 
-class _EmbeddingEncoder(Protocol):
+class EmbeddingEncoder(Protocol):
     """The part of SentenceTransformer used by this module."""
 
     def encode(
@@ -98,7 +98,7 @@ def _validate_encoded_matrix(encoded: object, expected_rows: int) -> list[list[f
 
 
 def embed_chunks(
-    chunks: Iterable[Chunk], *, model: _EmbeddingEncoder
+    chunks: Iterable[Chunk], *, model: EmbeddingEncoder
 ) -> list[EmbeddedChunk]:
     """Encode chunks in one batch while preserving their identity and order."""
     materialized_chunks = list(chunks)
