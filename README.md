@@ -89,3 +89,28 @@ synchronization and deletion are outside this milestone.
 Automated RAG tests use deterministic fake encoders and real temporary or
 ephemeral Chroma collections. They do not download MiniLM, contact Ollama, or
 write to the repository's persistent `chroma_db/` directory.
+
+## Milestone 11: grounded answers
+
+`rag.answer` adds one explicit path after Milestone 10 retrieval:
+
+```text
+question -> retrieve_chunks -> build_context -> Qwen via Ollama -> answer
+```
+
+`build_context` labels each retrieved chunk with its `documents/...` source in
+retrieval order. The prompt asks Qwen to use only that context, avoid unsupported
+claims, and say when evidence is insufficient. With no retrieved chunks, the
+command returns an insufficient-context message without calling Qwen. This
+standalone command does not change the agent or add tool calling.
+
+Index documents first, then run Ollama locally and ask a question:
+
+```powershell
+.\.venv\Scripts\python.exe -m rag.ingest
+.\.venv\Scripts\python.exe -m rag.answer "How does retrieval work?"
+```
+
+The answer command uses the same local MiniLM model, persistent Chroma
+collection, and `OLLAMA_MODEL` setting (default `qwen3:8b`) as the existing
+components. Its unit tests mock the Ollama call and need no running server.
