@@ -11,6 +11,7 @@ from tools import (
     LIST_FILES_TOOL,
     READ_FILE_TOOL,
     SEARCH_CODE_TOOL,
+    SEARCH_DOCS_TOOL,
     WORD_COUNT_TOOL,
     ToolRegistry,
 )
@@ -35,6 +36,7 @@ DEFAULT_TOOL_REGISTRY = ToolRegistry(
         LIST_FILES_TOOL,
         READ_FILE_TOOL,
         SEARCH_CODE_TOOL,
+        SEARCH_DOCS_TOOL,
         GIT_STATUS_TOOL,
         GIT_DIFF_TOOL,
     ]

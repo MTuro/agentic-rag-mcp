@@ -114,3 +114,19 @@ Index documents first, then run Ollama locally and ask a question:
 The answer command uses the same local MiniLM model, persistent Chroma
 collection, and `OLLAMA_MODEL` setting (default `qwen3:8b`) as the existing
 components. Its unit tests mock the Ollama call and need no running server.
+
+## Milestone 12: RAG as an agent tool
+
+The agent can now choose `search_docs(query)` for questions about indexed
+documentation. That tool calls the same standalone `rag.answer.answer_question`
+path; its grounded answer becomes an observation for the agent's next decision.
+Retrieval runs only when the model selects the tool. An empty collection returns
+an insufficient-context observation. Index documents before asking the agent:
+
+```powershell
+.\.venv\Scripts\python.exe -m rag.ingest
+"What does the documentation say about retrieval?" | .\.venv\Scripts\python.exe main.py
+```
+
+The agent loop and grounded answer each call local Ollama when `search_docs` is
+selected. The tool does not expose ChromaDB or embedding details to the agent.
