@@ -27,8 +27,13 @@ Choose exactly one of these decisions:
 
 Choose tools from the definitions below. Use each tool's argument schema to build
 the arguments object. After receiving an observation, use it to decide whether to
-call another tool or produce a final answer. Do not wrap JSON in Markdown.
+call another tool or produce a final answer. Do not repeat a successful tool call.
+As soon as the available evidence is sufficient, return a final answer instead of
+calling more tools. Do not wrap JSON in Markdown.
 """
+
+MAX_OBSERVATION_LENGTH = 8_000
+TRUNCATION_MARKER = "\n[tool result truncated]"
 
 DEFAULT_TOOL_REGISTRY = ToolRegistry(
     [
@@ -76,6 +81,23 @@ def _execute_action(decision: dict[str, Any], tool_registry: ToolRegistry) -> st
     return f"Tool {tool_name} returned: {result}"
 
 
+def _tool_call_signature(decision: dict[str, Any]) -> str:
+    """Return a stable identity for one validated tool call."""
+    return json.dumps(
+        [decision["tool"], decision["arguments"]],
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _limit_observation(observation: str) -> str:
+    """Bound evidence sent back to the model while preserving a clear marker."""
+    if len(observation) <= MAX_OBSERVATION_LENGTH:
+        return observation
+    return observation[: MAX_OBSERVATION_LENGTH - len(TRUNCATION_MARKER)] + TRUNCATION_MARKER
+
+
 def run_agent(
     prompt: str,
     *,
@@ -83,6 +105,9 @@ def run_agent(
     tool_registry: ToolRegistry = DEFAULT_TOOL_REGISTRY,
 ) -> str:
     """Run the manual decision-action-observation loop for one user prompt."""
+    if isinstance(max_steps, bool) or not isinstance(max_steps, int) or max_steps <= 0:
+        raise ValueError("max_steps must be a positive integer.")
+
     state = AgentState(
         messages=[
             {"role": "system", "content": _build_system_prompt(tool_registry)},
@@ -95,26 +120,45 @@ def run_agent(
         state.current_step += 1
         response = chat(state.messages)
         state.messages.append({"role": "assistant", "content": response})
-        decision = _parse_decision(response)
-        decision_type = decision.get("type")
+        try:
+            decision = _parse_decision(response)
+            decision_type = decision.get("type")
 
-        if decision_type == "final":
-            answer = decision.get("answer")
-            if not isinstance(answer, str) or not answer:
-                raise ValueError("A final decision requires a non-empty answer.")
-            return answer
+            if decision_type == "final":
+                answer = decision.get("answer")
+                if not isinstance(answer, str) or not answer.strip():
+                    raise ValueError("A final decision requires a non-empty answer.")
+                return answer
 
-        if decision_type == "action":
+            if decision_type != "action":
+                raise ValueError(f"Unknown decision type: {decision_type!r}.")
+
+            tool_name = decision.get("tool")
+            arguments = decision.get("arguments")
+            if not isinstance(tool_name, str) or not tool_name:
+                raise ValueError("An action decision requires a non-empty tool name.")
+            if not isinstance(arguments, dict):
+                raise ValueError("An action decision requires an arguments object.")
+
+            signature = _tool_call_signature(decision)
+            if signature in state.successful_tool_calls:
+                raise ValueError(
+                    "This successful tool call was already made; use its existing "
+                    "evidence or choose another action."
+                )
+
             observation = _execute_action(decision, tool_registry)
-            state.observations.append(observation)
-            state.messages.append(
-                {
-                    "role": "user",
-                    "content": f"Observation: {observation}. Decide what to do next.",
-                }
-            )
-            continue
+            state.successful_tool_calls.add(signature)
+        except Exception as exc:
+            observation = f"Error: {exc}"
 
-        raise ValueError(f"Unknown decision type: {decision_type!r}.")
+        observation = _limit_observation(observation)
+        state.observations.append(observation)
+        state.messages.append(
+            {
+                "role": "user",
+                "content": f"Observation: {observation}. Decide what to do next.",
+            }
+        )
 
     raise RuntimeError(f"Agent stopped after reaching the maximum of {state.max_steps} steps.")

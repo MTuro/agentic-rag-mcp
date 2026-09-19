@@ -130,3 +130,17 @@ an insufficient-context observation. Index documents before asking the agent:
 
 The agent loop and grounded answer each call local Ollama when `search_docs` is
 selected. The tool does not expose ChromaDB or embedding details to the agent.
+
+## Milestone 13: tool-calling reliability
+
+The manual loop now returns malformed decisions, unknown tools, invalid
+arguments, and tool failures to the model as error observations so it can
+correct its next decision. Ollama connection failures remain fatal because the
+agent cannot repair unavailable inference infrastructure.
+
+Successful calls are identified by tool name and canonically serialized
+arguments. An exact repeat is blocked, while different arguments and retries
+after failures remain valid. Tool observations are capped at 8,000 characters
+with a truncation marker, and `max_steps` must be a positive integer. The system
+prompt tells the model to answer as soon as its evidence is sufficient; the
+five-step limit remains the deterministic backstop.

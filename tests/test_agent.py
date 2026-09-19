@@ -19,6 +19,7 @@ def test_agent_state_starts_with_explicit_defaults() -> None:
     assert state.current_step == 0
     assert state.max_steps == MAX_STEPS
     assert state.observations == []
+    assert state.successful_tool_calls == set()
 
 
 def test_run_agent_returns_immediate_final_answer(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -34,6 +35,7 @@ def test_run_agent_returns_immediate_final_answer(monkeypatch: pytest.MonkeyPatc
 
     assert answer == "Hello from the agent"
     assert captured_messages[0][0]["role"] == "system"
+    assert "available evidence is sufficient" in captured_messages[0][0]["content"]
     assert captured_messages[0][1] == {"role": "user", "content": "Hello"}
 
 
@@ -223,21 +225,179 @@ def test_run_agent_stops_at_max_steps(monkeypatch: pytest.MonkeyPatch) -> None:
     ("response", "error"),
     [
         ("not JSON", "invalid JSON"),
+        ('["not", "an", "object"]', "must be a JSON object"),
         ('{"type": "other"}', "Unknown decision type"),
         (
             '{"type": "action", "tool": "missing", "arguments": {"text": "text"}}',
             "Unknown tool",
         ),
         ('{"type": "action", "tool": "word_count"}', "requires an arguments object"),
+        (
+            '{"type": "action", "tool": "word_count", "arguments": {"wrong": "text"}}',
+            "Invalid arguments",
+        ),
         ('{"type": "final", "answer": ""}', "requires a non-empty answer"),
     ],
 )
-def test_run_agent_rejects_invalid_decisions(
+def test_run_agent_reports_invalid_decisions_for_model_correction(
     monkeypatch: pytest.MonkeyPatch,
     response: str,
     error: str,
 ) -> None:
-    monkeypatch.setattr(agent_module, "chat", lambda messages: response)
+    responses = iter([response, '{"type": "final", "answer": "Recovered"}'])
+    calls = []
 
-    with pytest.raises(ValueError, match=error):
+    def fake_chat(messages):
+        calls.append([message.copy() for message in messages])
+        return next(responses)
+
+    monkeypatch.setattr(agent_module, "chat", fake_chat)
+
+    assert agent_module.run_agent("Hello") == "Recovered"
+    assert "Observation: Error:" in calls[1][-1]["content"]
+    assert error in calls[1][-1]["content"]
+
+
+def test_run_agent_reports_tool_exception_and_allows_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+
+    def flaky_tool() -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("temporary failure")
+        return "recovered evidence"
+
+    registry = ToolRegistry(
+        [Tool("flaky", "Fail once.", {"type": "object"}, flaky_tool)]
+    )
+    responses = iter(
+        [
+            '{"type": "action", "tool": "flaky", "arguments": {}}',
+            '{"type": "action", "tool": "flaky", "arguments": {}}',
+            '{"type": "final", "answer": "Done"}',
+        ]
+    )
+    calls = []
+
+    def fake_chat(messages):
+        calls.append([message.copy() for message in messages])
+        return next(responses)
+
+    monkeypatch.setattr(agent_module, "chat", fake_chat)
+
+    assert agent_module.run_agent("Retry", tool_registry=registry) == "Done"
+    assert attempts == 2
+    assert "temporary failure" in calls[1][-1]["content"]
+    assert "Tool flaky returned: recovered evidence" in calls[2][-1]["content"]
+
+
+def test_run_agent_blocks_canonical_duplicate_successful_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executions = 0
+
+    def combine(left: str, right: str) -> str:
+        nonlocal executions
+        executions += 1
+        return left + right
+
+    registry = ToolRegistry(
+        [Tool("combine", "Combine text.", {"type": "object"}, combine)]
+    )
+    responses = iter(
+        [
+            '{"type": "action", "tool": "combine", "arguments": {"left": "a", "right": "b"}}',
+            '{"type": "action", "tool": "combine", "arguments": {"right": "b", "left": "a"}}',
+            '{"type": "final", "answer": "ab"}',
+        ]
+    )
+    calls = []
+
+    def fake_chat(messages):
+        calls.append([message.copy() for message in messages])
+        return next(responses)
+
+    monkeypatch.setattr(agent_module, "chat", fake_chat)
+
+    assert agent_module.run_agent("Combine", tool_registry=registry) == "ab"
+    assert executions == 1
+    assert "already made" in calls[2][-1]["content"]
+    assert "existing evidence" in calls[2][-1]["content"]
+
+
+def test_run_agent_allows_same_tool_with_different_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arguments = []
+
+    def record(text: str) -> str:
+        arguments.append(text)
+        return text
+
+    registry = ToolRegistry([Tool("record", "Record text.", {"type": "object"}, record)])
+    responses = iter(
+        [
+            '{"type": "action", "tool": "record", "arguments": {"text": "one"}}',
+            '{"type": "action", "tool": "record", "arguments": {"text": "two"}}',
+            '{"type": "final", "answer": "Done"}',
+        ]
+    )
+    monkeypatch.setattr(agent_module, "chat", lambda messages: next(responses))
+
+    assert agent_module.run_agent("Record", tool_registry=registry) == "Done"
+    assert arguments == ["one", "two"]
+
+
+@pytest.mark.parametrize("size", [10, agent_module.MAX_OBSERVATION_LENGTH * 2])
+def test_run_agent_limits_only_oversized_tool_observations(
+    monkeypatch: pytest.MonkeyPatch,
+    size: int,
+) -> None:
+    registry = ToolRegistry(
+        [Tool("large", "Return text.", {"type": "object"}, lambda: "x" * size)]
+    )
+    responses = iter(
+        [
+            '{"type": "action", "tool": "large", "arguments": {}}',
+            '{"type": "final", "answer": "Done"}',
+        ]
+    )
+    calls = []
+
+    def fake_chat(messages):
+        calls.append([message.copy() for message in messages])
+        return next(responses)
+
+    monkeypatch.setattr(agent_module, "chat", fake_chat)
+
+    assert agent_module.run_agent("Get text", tool_registry=registry) == "Done"
+    observation = calls[1][-1]["content"].removeprefix("Observation: ").removesuffix(
+        ". Decide what to do next."
+    )
+    if size == 10:
+        assert observation == f"Tool large returned: {'x' * size}"
+    else:
+        assert len(observation) == agent_module.MAX_OBSERVATION_LENGTH
+        assert observation.endswith(agent_module.TRUNCATION_MARKER)
+
+
+@pytest.mark.parametrize("max_steps", [0, -1, True, 1.5, "2"])
+def test_run_agent_requires_positive_integer_max_steps(max_steps) -> None:
+    with pytest.raises(ValueError, match="positive integer"):
+        agent_module.run_agent("Hello", max_steps=max_steps)
+
+
+def test_chat_failures_remain_fatal(monkeypatch: pytest.MonkeyPatch) -> None:
+    failure = ConnectionError("Ollama unavailable")
+
+    def fail(messages):
+        raise failure
+
+    monkeypatch.setattr(agent_module, "chat", fail)
+
+    with pytest.raises(ConnectionError) as caught:
         agent_module.run_agent("Hello")
+    assert caught.value is failure
