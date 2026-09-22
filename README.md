@@ -144,3 +144,49 @@ after failures remain valid. Tool observations are capped at 8,000 characters
 with a truncation marker, and `max_steps` must be a positive integer. The system
 prompt tells the model to answer as soon as its evidence is sufficient; the
 five-step limit remains the deterministic backstop.
+
+## Milestone 14: first MCP server
+
+The first MCP server exposes only the existing read-only `list_files` function:
+
+```text
+MCP host -> MCP client -> stdio -> MCP server -> list_files -> result
+```
+
+The host is the application the user interacts with. Its MCP client discovers
+and invokes capabilities offered by this repository's MCP server. A tool is a
+model-invoked function; resources are application-loaded context, and prompts
+are user-selected message templates. This milestone registers one tool and no
+resources or prompts.
+
+`mcp_server.server` uses the official Python MCP SDK. The SDK discovers the
+tool's name, description, annotations, and input schema from its registration
+and typed function signature. Its thin adapter accepts only a project-relative
+`path` and delegates to `tools.filesystem.list_files`, so path confinement,
+validation, sorting, and error behavior remain in the normal Python module.
+
+Start the local stdio server with:
+
+```powershell
+.\.venv\Scripts\python.exe -m mcp_server.server
+```
+
+The command waits silently for a host to send MCP messages through stdin.
+Stdout carries the protocol and must not be used for application logging. To
+inspect the server interactively, install Node.js so `npx` is available, then
+run:
+
+```powershell
+$env:PYTHONPATH = (Get-Location).Path
+.\.venv\Scripts\mcp.exe dev mcp_server/server.py:mcp
+```
+
+The Inspector should discover exactly `list_files`. Calling it with `{"path":
+"."}` returns a sorted project-relative listing; missing directories and `..`
+return tool errors without allowing access outside the configured project root.
+
+Automated tests use both the SDK's in-memory client and a real stdio subprocess:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/test_mcp_server.py tests/test_filesystem.py -v
+```
