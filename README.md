@@ -190,3 +190,55 @@ Automated tests use both the SDK's in-memory client and a real stdio subprocess:
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/test_mcp_server.py tests/test_filesystem.py -v
 ```
+
+## Milestone 15: existing tools through MCP
+
+The stdio server now advertises the six existing read-only capabilities:
+
+```text
+list_files(path)       read_file(path)       search_code(query)
+git_status()           git_diff(staged=False) search_docs(query)
+```
+
+Each MCP adapter reuses the corresponding tool name and description, exposes
+only its public arguments, and delegates directly to the existing Python
+function. The MCP SDK generates the input schema from the adapter's type hints,
+validates calls, and returns implementation exceptions as tool errors. All six
+tools are marked read-only and closed-world.
+
+`search_docs` remains lazy: importing the server or discovering its tools does
+not load MiniLM, open ChromaDB, contact Ollama, or perform retrieval. Those
+dependencies are used only when a client invokes `search_docs`.
+
+```text
+MCP Client
+   |
+   v
+discover search_code
+   |
+   v
+invoke search_code(query)
+   |
+   v
+MCP adapter
+   |
+   v
+tools.search.search_code
+   |
+   v
+result
+   |
+   v
+MCP response
+```
+
+Run the protocol server with:
+
+```powershell
+.\.venv\Scripts\python.exe -m mcp_server.server
+```
+
+The process writes MCP messages to stdout, so normal application output must
+not be printed there. The main agent still calls its local `ToolRegistry`; MCP
+does not replace agent tool access yet. The MCP client is Milestone 16, and
+agent-to-MCP integration is Milestone 17.
