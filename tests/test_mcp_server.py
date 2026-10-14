@@ -126,24 +126,31 @@ async def test_server_discovers_exact_tool_catalog_and_schemas() -> None:
     [
         ("list_files", {}),
         ("list_files", {"path": 123}),
+        ("list_files", {"path": ".", "extra": True}),
         ("read_file", {}),
         ("read_file", {"path": None}),
+        ("read_file", {"path": "README.md", "extra": True}),
         ("search_code", {}),
         ("search_code", {"query": 123}),
+        ("search_code", {"query": "mcp", "extra": True}),
         ("search_docs", {}),
         ("search_docs", {"query": 123}),
+        ("search_docs", {"query": "valid documentation query", "extra": True}),
         ("git_status", {"unexpected": True}),
         ("git_diff", {"staged": "yes"}),
         ("git_diff", {"extra": True}),
     ],
 )
 async def test_server_rejects_invalid_arguments(
-    name: str, arguments: dict[str, object]
+    name: str, arguments: dict[str, object], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    rag_calls = []
+    monkeypatch.setattr(server, "search_docs", lambda query: rag_calls.append(query) or "answer")
     async with Client(server.mcp, raise_exceptions=True) as client:
         result = await client.call_tool(name, arguments)
 
     assert result.is_error is True
+    assert rag_calls == []
 
 
 @pytest.mark.anyio

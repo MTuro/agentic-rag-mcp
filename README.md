@@ -242,3 +242,109 @@ The process writes MCP messages to stdout, so normal application output must
 not be printed there. The main agent still calls its local `ToolRegistry`; MCP
 does not replace agent tool access yet. The MCP client is Milestone 16, and
 agent-to-MCP integration is Milestone 17.
+
+## Milestone 16: standalone MCP client
+
+The MCP **server** exposes the existing Python tools. The standalone MCP
+**client** starts that server, initializes the protocol session, discovers its
+tools, and sends explicit caller-selected invocations. The main application
+agent still uses its local Python `ToolRegistry`; it does not use MCP yet.
+
+```text
+Standalone CLI / Python caller
+        |
+        v
+MCP Client -> stdio -> MCP Server -> existing Python tools
+```
+
+`mcp_client.client.connect()` constructs a lazy official SDK `Client` without
+starting a process. Entering `async with connect()` starts
+`sys.executable -m mcp_server.server` in the repository root and performs the MCP
+initialization handshake. Launch with the repository-local interpreter so the
+child uses the same virtual environment. No server import, model loading, or
+Ollama connection occurs when importing the client.
+
+`list_tools()` returns the server's names, descriptions, input schemas, and
+other metadata unchanged. The client contains no copied tool catalog or second
+registry. `call_tool(name, arguments)` forwards caller input to MCP; the server
+validates it and delegates to the existing Python implementation. A small server
+middleware check rejects undeclared argument keys before the SDK can silently
+discard them, using the server's existing schemas.
+
+### Run locally on Windows
+
+Run from the repository root. These commands work in Windows PowerShell 5.1;
+the backslashes preserve JSON quotes through its native-command argument parser:
+
+```powershell
+.\.venv\Scripts\python.exe -m mcp_client.client --list-tools
+.\.venv\Scripts\python.exe -m mcp_client.client list_files '{\"path\":\".\"}'
+.\.venv\Scripts\python.exe -m mcp_client.client search_code '{\"query\":\"mcp_list_files\"}'
+.\.venv\Scripts\python.exe -m mcp_client.client list_files '{\"path\":\"..\"}'
+```
+
+In shells that preserve single-quoted arguments directly, such as PowerShell 7
+with standard native argument passing, use ordinary JSON: `'{"path":"."}'`.
+
+The CLI always discovers tools first and prints SDK results as JSON. A successful
+invocation exits with status 0. Tool failures, including unknown tools, invalid
+arguments, and forbidden paths, retain `isError: true` and exit with status 1.
+Malformed CLI JSON or a non-object argument exits with status 2 before starting
+the server. Startup, initialization, discovery, and transport failures remain
+fatal exceptions, distinct from tool results. SDK task groups may wrap exceptions
+in an `ExceptionGroup`.
+
+The Python interface uses the same SDK result objects (`input_schema` and
+`is_error` are their Python field names):
+
+```python
+import asyncio
+from mcp_client.client import connect
+
+async def main():
+    async with connect() as client:
+        tools = await client.list_tools()
+        for tool in tools.tools:
+            print(tool.name, tool.description, tool.input_schema)
+        result = await client.call_tool("list_files", {"path": "."})
+        print(result.is_error, result.structured_content)
+
+asyncio.run(main())
+```
+
+### Runtime and subprocess lifecycle
+
+```text
+Standalone MCP Client
+        |
+        v
+start stdio server -> initialize -> list_tools -> receive tool schemas
+        |
+        v
+call_tool("list_files", {"path":"."})
+        |
+        v
+MCP Server -> tools.filesystem.list_files -> MCP result -> Client
+        |
+        v
+exit async context -> close session and stdio -> reap server subprocess
+```
+
+For this example, the server confines `.` to the configured project root,
+returns entries including `README.md`, and the client receives the structured
+result. The SDK owns session and process cleanup on success and failure: it
+closes stdin, waits for exit, and terminates the process tree if necessary.
+Create a fresh `connect()` context for each session. Stdout carries MCP between
+the child and client; server diagnostics go to stderr.
+
+Verification includes the actual stdio server, repeated sessions, forbidden
+paths, malformed/unknown tool calls, failed startup/initialization/discovery,
+abrupt server exit, and recorded child-process exit codes. A separate temporary
+server with a different catalog verifies dynamic discovery and schema/argument
+preservation. Automated checks invoke no real Ollama or `search_docs` inference.
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/test_mcp_client.py tests/test_mcp_server.py -v
+.\.venv\Scripts\python.exe -m pytest -v
+.\.venv\Scripts\python.exe -m pip check
+```

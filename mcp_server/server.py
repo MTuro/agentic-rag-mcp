@@ -3,7 +3,8 @@
 from typing import Annotated
 
 from mcp.server import MCPServer
-from mcp.types import ToolAnnotations
+from mcp.server.context import CallNext, HandlerResult, ServerRequestContext
+from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import Field
 
 from tools.filesystem import (
@@ -17,7 +18,25 @@ from tools.rag import SEARCH_DOCS_TOOL, search_docs
 from tools.search import SEARCH_CODE_TOOL, search_code
 
 
-mcp = MCPServer("agentic-rag-mcp")
+async def reject_extra_arguments(
+    context: ServerRequestContext, call_next: CallNext
+) -> HandlerResult:
+    """Reject undeclared keys before the SDK's argument model discards them."""
+    if context.method == "tools/call" and isinstance(context.params, dict):
+        arguments = context.params.get("arguments", {})
+        if isinstance(arguments, dict):
+            for tool in await mcp.list_tools():
+                if tool.name == context.params.get("name"):
+                    extra = arguments.keys() - tool.input_schema.get("properties", {}).keys()
+                    if extra:
+                        return CallToolResult(
+                            is_error=True,
+                            content=[TextContent(type="text", text=f"Unexpected arguments: {sorted(extra)}")],
+                        )
+    return await call_next(context)
+
+
+mcp = MCPServer("agentic-rag-mcp", middleware=[reject_extra_arguments])
 
 
 @mcp.tool(
