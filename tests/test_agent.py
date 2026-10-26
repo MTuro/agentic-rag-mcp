@@ -7,7 +7,17 @@ import pytest
 import agent.agent as agent_module
 from agent.state import MAX_STEPS, AgentState
 import tools.git as git_module
-from tools import Tool, ToolRegistry, word_count
+from tools import (
+    GIT_DIFF_TOOL, GIT_STATUS_TOOL, LIST_FILES_TOOL, READ_FILE_TOOL,
+    SEARCH_CODE_TOOL, SEARCH_DOCS_TOOL, WORD_COUNT_TOOL,
+    Tool, ToolRegistry, word_count,
+)
+
+
+LOCAL_TOOLS = ToolRegistry([
+    WORD_COUNT_TOOL, LIST_FILES_TOOL, READ_FILE_TOOL, SEARCH_CODE_TOOL,
+    SEARCH_DOCS_TOOL, GIT_STATUS_TOOL, GIT_DIFF_TOOL,
+])
 
 
 def test_agent_state_starts_with_explicit_defaults() -> None:
@@ -31,11 +41,16 @@ def test_run_agent_returns_immediate_final_answer(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr(agent_module, "chat", fake_chat)
 
-    answer = agent_module.run_agent("Hello")
+    answer = agent_module.run_agent("Hello", tool_registry=LOCAL_TOOLS)
 
     assert answer == "Hello from the agent"
     assert captured_messages[0][0]["role"] == "system"
     assert "available evidence is sufficient" in captured_messages[0][0]["content"]
+    system_prompt = captured_messages[0][0]["content"]
+    assert "inspect the requested files before making factual claims" in system_prompt
+    assert "inspect both and cite their file paths" in system_prompt
+    assert "Never invent excerpts" in system_prompt
+    assert "state the limitation instead of guessing" in system_prompt
     assert captured_messages[0][1] == {"role": "user", "content": "Hello"}
 
 
@@ -63,7 +78,7 @@ def test_run_agent_feeds_action_observation_back_to_model(
     monkeypatch.setattr(agent_module, "chat", fake_chat)
     monkeypatch.setattr(agent_module, "AgentState", capture_state)
 
-    answer = agent_module.run_agent("How many words are in: one two three?")
+    answer = agent_module.run_agent("How many words are in: one two three?", tool_registry=LOCAL_TOOLS)
 
     assert answer == "The text contains 3 words."
     assert len(calls) == 2
@@ -138,7 +153,7 @@ def test_run_agent_selects_filesystem_tools_through_generic_registry(
 
     monkeypatch.setattr(agent_module, "chat", fake_chat)
 
-    answer = agent_module.run_agent("Explain what this repository does.")
+    answer = agent_module.run_agent("Explain what this repository does.", tool_registry=LOCAL_TOOLS)
 
     assert answer == "This repository explores a local agent."
     assert len(calls) == 3
@@ -182,7 +197,7 @@ def test_run_agent_selects_git_tools_and_returns_observations_to_model(
         ),
     )
 
-    answer = agent_module.run_agent("What changes have I made to the agent?")
+    answer = agent_module.run_agent("What changes have I made to the agent?", tool_registry=LOCAL_TOOLS)
 
     assert answer == "agent.py has unstaged changes."
     assert len(calls) == 3
@@ -216,7 +231,7 @@ def test_run_agent_stops_at_max_steps(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(agent_module, "chat", fake_chat)
 
     with pytest.raises(RuntimeError, match="maximum of 2 steps"):
-        agent_module.run_agent("Never finish", max_steps=2)
+        agent_module.run_agent("Never finish", max_steps=2, tool_registry=LOCAL_TOOLS)
 
     assert call_count == 2
 
@@ -237,6 +252,10 @@ def test_run_agent_stops_at_max_steps(monkeypatch: pytest.MonkeyPatch) -> None:
             "Invalid arguments",
         ),
         ('{"type": "final", "answer": ""}', "requires a non-empty answer"),
+        (
+            '{"type": "final", "response": "Wrong field"}',
+            '{"type": "final", "answer": "your answer"}',
+        ),
     ],
 )
 def test_run_agent_reports_invalid_decisions_for_model_correction(
@@ -253,7 +272,7 @@ def test_run_agent_reports_invalid_decisions_for_model_correction(
 
     monkeypatch.setattr(agent_module, "chat", fake_chat)
 
-    assert agent_module.run_agent("Hello") == "Recovered"
+    assert agent_module.run_agent("Hello", tool_registry=LOCAL_TOOLS) == "Recovered"
     assert "Observation: Error:" in calls[1][-1]["content"]
     assert error in calls[1][-1]["content"]
 
@@ -387,7 +406,7 @@ def test_run_agent_limits_only_oversized_tool_observations(
 @pytest.mark.parametrize("max_steps", [0, -1, True, 1.5, "2"])
 def test_run_agent_requires_positive_integer_max_steps(max_steps) -> None:
     with pytest.raises(ValueError, match="positive integer"):
-        agent_module.run_agent("Hello", max_steps=max_steps)
+        agent_module.run_agent("Hello", max_steps=max_steps, tool_registry=LOCAL_TOOLS)
 
 
 def test_chat_failures_remain_fatal(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -399,5 +418,5 @@ def test_chat_failures_remain_fatal(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(agent_module, "chat", fail)
 
     with pytest.raises(ConnectionError) as caught:
-        agent_module.run_agent("Hello")
+        agent_module.run_agent("Hello", tool_registry=LOCAL_TOOLS)
     assert caught.value is failure

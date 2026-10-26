@@ -16,6 +16,10 @@ from rag.answer import NO_EVIDENCE
 from rag.chunking import Chunk
 from rag.embeddings import EmbeddedChunk, EmbeddingError
 from rag.vector_store import upsert_chunks
+from tools.registry import ToolRegistry
+
+
+LOCAL_TOOLS = ToolRegistry([rag_tool.SEARCH_DOCS_TOOL])
 
 
 def test_tool_schema_and_valid_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -83,7 +87,7 @@ def test_agent_advertises_selects_and_observes_search_docs(monkeypatch: pytest.M
     monkeypatch.setattr(vector_store_module, "open_collection", lambda: object())
     monkeypatch.setattr(answer_module, "answer_question", lambda *args, **kwargs: "Grounded answer.")
 
-    assert agent_module.run_agent("What do the docs say about RAG?") == "RAG retrieves document context."
+    assert agent_module.run_agent("What do the docs say about RAG?", tool_registry=LOCAL_TOOLS) == "RAG retrieves document context."
     assert '"name": "search_docs"' in calls[0][0]["content"]
     assert calls[1][-1]["content"] == (
         "Observation: Tool search_docs returned: Grounded answer.. Decide what to do next."
@@ -95,7 +99,7 @@ def test_direct_final_does_not_load_rag(monkeypatch: pytest.MonkeyPatch) -> None
         agent_module, "chat", lambda messages: '{"type": "final", "answer": "Hello."}'
     )
     monkeypatch.setattr(embeddings_module, "load_embedding_model", lambda: pytest.fail("RAG loaded"))
-    assert agent_module.run_agent("Hello") == "Hello."
+    assert agent_module.run_agent("Hello", tool_registry=LOCAL_TOOLS) == "Hello."
 
 
 def test_agent_to_ephemeral_chroma_to_grounded_answer(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -136,7 +140,7 @@ def test_agent_to_ephemeral_chroma_to_grounded_answer(monkeypatch: pytest.Monkey
         return next(responses)
 
     monkeypatch.setattr(agent_module, "chat", fake_agent_chat)
-    assert agent_module.run_agent("What does the documentation say RAG retrieves?") == (
+    assert agent_module.run_agent("What does the documentation say RAG retrieves?", tool_registry=LOCAL_TOOLS) == (
         "RAG retrieves Markdown chunks."
     )
     assert "[Source: documents/guide.md]" in grounded_calls[0][1]["content"]

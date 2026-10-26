@@ -1,10 +1,14 @@
 """Run one user request through the local manual agent loop."""
 
+import logging
+
 from agent import run_agent
 
 
 def main() -> None:
-    """Read one prompt, run the agent, and print its final answer."""
+    """Show tool evidence on stderr and print the final answer on stdout."""
+    logging.basicConfig(format="%(message)s")
+    logging.getLogger("agent.agent").setLevel(logging.INFO)
     prompt = input("You: ")
     answer = run_agent(prompt)
     print(answer)

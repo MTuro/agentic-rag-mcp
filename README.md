@@ -348,3 +348,72 @@ preservation. Automated checks invoke no real Ollama or `search_docs` inference.
 .\.venv\Scripts\python.exe -m pytest -v
 .\.venv\Scripts\python.exe -m pip check
 ```
+
+## Milestone 17: agent tools through MCP
+
+The manual agent now uses MCP by default. `run_agent(prompt)` opens one stdio
+session, discovers the server's tool names, descriptions and input schemas, and
+keeps that session open throughout the decision loop. There is no copied tool
+catalog in the agent. The server still delegates to the existing Python tools.
+
+```text
+User -> Qwen decision -> MCP client -> MCP server -> Python tool
+              ^                                      |
+              +--------------- observation <---------+
+              |
+              +-> final answer
+```
+
+Discovery tells Qwen which capabilities exist; MCP transports calls and results.
+The model still chooses each action dynamically. For a documentation comparison,
+it can request `search_docs`, inspect matching code with `search_code` and
+`read_file`, then compare the observations. This sequence is not hardcoded.
+
+Structured MCP results become JSON evidence; text-only results remain text.
+Tool failures (`isError`) become error observations and may be retried. Successful
+duplicate calls are blocked, observations remain bounded, and the maximum-step
+limit still applies. Connection, discovery, transport and Ollama failures remain
+fatal; there is no automatic fallback to local tools. Exiting the session closes
+the server process, including when the loop fails.
+
+The public synchronous entry point remains `run_agent`. Async callers use
+`await run_agent_async(prompt)`, exported by `agent`. Ollama inference runs in a
+worker thread so it does not block MCP session processing. For comparison with
+earlier milestones, pass `tool_registry=ToolRegistry([...])` explicitly to either
+entry point; both paths share one loop. The educational `word_count` tool is
+available through this explicit local registry, not the default MCP catalog.
+
+Run the CLI as before:
+
+```powershell
+.\.venv\Scripts\python.exe main.py
+```
+
+For a real local check, first run `ollama serve` if Ollama is not running and
+ensure `qwen3:8b` and the embedding model are available locally. Place the Markdown
+documentation to compare in `documents`, then index that directory and start the CLI.
+The ingestion command accepts directories, not individual Markdown files:
+
+```powershell
+.\.venv\Scripts\python.exe -m rag.ingest documents
+.\.venv\Scripts\python.exe main.py
+```
+
+Enter: `Check the documentation about the MCP client and determine whether the
+current implementation matches it. Cite the files supporting your comparison.`
+The default CLI prints tool calls (including arguments) and bounded observations
+to stderr as they occur, and the final answer to stdout. A `[tool call]` marks an
+execution attempt; its `[observation]` shows the returned evidence or error.
+No tool trace means no tool was invoked, even if the model claims it read files.
+The prompt instructs the model to inspect requested files, compare both sources,
+and cite observed excerpts rather than guess. These instructions do not guarantee
+model compliance; use the trace to verify the evidence behind an answer.
+Automated tests inspect the tool calls and observations without requiring Ollama.
+These cover fake-client failure paths, actual stdio calls, and a real in-process
+MCP server using an
+ephemeral Chroma collection with fake embeddings and mocked model responses.
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/test_agent.py tests/test_agent_mcp.py tests/test_rag_tool.py -v
+.\.venv\Scripts\python.exe -m pytest -v
+```
