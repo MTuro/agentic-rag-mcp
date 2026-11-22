@@ -1,6 +1,9 @@
 """Tests for the explicit manual agent loop."""
 
 from collections.abc import Iterator
+from dataclasses import replace
+from functools import partial
+from pathlib import Path
 
 import pytest
 
@@ -137,7 +140,18 @@ def test_run_agent_shows_registered_tools_and_dispatches_model_selection(
 
 def test_run_agent_selects_filesystem_tools_through_generic_registry(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
+    readme = "# Example project\n\nAn agentic software engineering assistant.\n"
+    (tmp_path / "README.md").write_text(readme, encoding="utf-8")
+    registry = ToolRegistry([
+        replace(tool, implementation=partial(tool.implementation, project_root=tmp_path))
+        if tool.name in {"list_files", "read_file"} else tool
+        for tool in (
+            WORD_COUNT_TOOL, LIST_FILES_TOOL, READ_FILE_TOOL, SEARCH_CODE_TOOL,
+            SEARCH_DOCS_TOOL, GIT_STATUS_TOOL, GIT_DIFF_TOOL,
+        )
+    ])
     responses: Iterator[str] = iter(
         [
             '{"type": "action", "tool": "list_files", "arguments": {"path": "."}}',
@@ -153,7 +167,7 @@ def test_run_agent_selects_filesystem_tools_through_generic_registry(
 
     monkeypatch.setattr(agent_module, "chat", fake_chat)
 
-    answer = agent_module.run_agent("Explain what this repository does.", tool_registry=LOCAL_TOOLS)
+    answer = agent_module.run_agent("Explain what this repository does.", tool_registry=registry)
 
     assert answer == "This repository explores a local agent."
     assert len(calls) == 3
@@ -164,7 +178,9 @@ def test_run_agent_selects_filesystem_tools_through_generic_registry(
     assert "Tool list_files returned:" in calls[1][-1]["content"]
     assert "README.md" in calls[1][-1]["content"]
     assert "Tool read_file returned:" in calls[2][-1]["content"]
-    assert "agentic software engineering assistant" in calls[2][-1]["content"]
+    assert calls[2][-1]["content"] == (
+        f"Observation: Tool read_file returned: {readme}. Decide what to do next."
+    )
 
 
 def test_run_agent_selects_git_tools_and_returns_observations_to_model(

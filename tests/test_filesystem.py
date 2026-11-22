@@ -1,5 +1,7 @@
 """Tests for read-only filesystem tools and project-root safety."""
 
+from dataclasses import replace
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -102,8 +104,13 @@ def test_filesystem_tools_reject_symlink_escape(tmp_path: Path) -> None:
         read_file("outside-link.txt", project_root=project_root)
 
 
-def test_registry_exposes_and_executes_filesystem_tools() -> None:
-    registry = ToolRegistry([LIST_FILES_TOOL, READ_FILE_TOOL])
+def test_registry_exposes_and_executes_filesystem_tools(tmp_path: Path) -> None:
+    readme = "# Example project\n\nA local software engineering assistant.\n"
+    (tmp_path / "README.md").write_text(readme, encoding="utf-8")
+    registry = ToolRegistry([
+        replace(tool, implementation=partial(tool.implementation, project_root=tmp_path))
+        for tool in (LIST_FILES_TOOL, READ_FILE_TOOL)
+    ])
     definitions = registry.model_definitions()
 
     assert [definition["name"] for definition in definitions] == [
@@ -112,7 +119,5 @@ def test_registry_exposes_and_executes_filesystem_tools() -> None:
     ]
     assert definitions[0]["arguments"]["required"] == ["path"]
     assert definitions[1]["arguments"]["required"] == ["path"]
-    assert "README.md" in registry.execute("list_files", {"path": "."})
-    assert "agentic software engineering assistant" in registry.execute(
-        "read_file", {"path": "README.md"}
-    )
+    assert registry.execute("list_files", {"path": "."}) == ["README.md"]
+    assert registry.execute("read_file", {"path": "README.md"}) == readme
