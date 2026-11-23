@@ -6,7 +6,7 @@ import json
 import logging
 from typing import Any
 
-from agent.state import MAX_STEPS, AgentState
+from agent.state import MAX_STEPS, AgentResult, AgentState
 from llm.ollama_client import chat
 from mcp_client.client import connect
 from tools.registry import ToolRegistry
@@ -98,6 +98,17 @@ async def run_agent_async(
     max_steps: int = MAX_STEPS,
     tool_registry: ToolRegistry | None = None,
 ) -> str:
+    """Return the answer text for callers that do not need tool metadata."""
+    result = await run_agent_with_result(prompt, max_steps=max_steps, tool_registry=tool_registry)
+    return result.answer
+
+
+async def run_agent_with_result(
+    prompt: str,
+    *,
+    max_steps: int = MAX_STEPS,
+    tool_registry: ToolRegistry | None = None,
+) -> AgentResult:
     """Discover MCP tools by default, or use an explicitly supplied local registry."""
     if isinstance(max_steps, bool) or not isinstance(max_steps, int) or max_steps <= 0:
         raise ValueError("max_steps must be a positive integer.")
@@ -136,7 +147,7 @@ async def _run_loop(
     max_steps: int,
     definitions: list[dict[str, Any]],
     execute: Callable[[str, dict[str, Any]], Awaitable[Any]],
-) -> str:
+) -> AgentResult:
     """Share the same decisions and safeguards across both execution paths."""
     state = AgentState(
         messages=[
@@ -161,7 +172,7 @@ async def _run_loop(
                         'A final decision requires a non-empty answer. Return '
                         '{"type": "final", "answer": "your answer"} with your answer as a string.'
                     )
-                return answer
+                return AgentResult(answer=answer, tools_used=state.tools_used)
 
             if decision_type != "action":
                 raise ValueError(f"Unknown decision type: {decision_type!r}.")
@@ -191,6 +202,8 @@ async def _run_loop(
             else:
                 observation = f"Tool {tool_name} returned: {result}"
                 state.successful_tool_calls.add(signature)
+                if tool_name not in state.tools_used:
+                    state.tools_used.append(tool_name)
 
         observation = _limit_observation(observation)
         logger.info("[observation] %s", observation)

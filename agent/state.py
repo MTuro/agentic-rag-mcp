@@ -7,6 +7,14 @@ MAX_STEPS = 5
 
 
 @dataclass
+class AgentResult:
+    """The final answer and the successfully used tools in first-use order."""
+
+    answer: str
+    tools_used: list[str]
+
+
+@dataclass
 class AgentState:
     """Information the agent retains between language-model decisions."""
 
@@ -15,3 +23,4 @@ class AgentState:
     max_steps: int = MAX_STEPS
     observations: list[str] = field(default_factory=list)
     successful_tool_calls: set[str] = field(default_factory=set)
+    tools_used: list[str] = field(default_factory=list)

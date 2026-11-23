@@ -16,8 +16,8 @@ separate Ollama call to generate an answer from retrieved passages. Retrieval
 runs when the model selects `search_docs`; ordinary requests do not automatically
 trigger it. The retrieval and grounded-answer commands also work independently.
 
-Agent-to-MCP integration (Milestone 17) is implemented. FastAPI, agent evaluations,
-and LangGraph are planned; the current interface handles one CLI request per run.
+The agent accepts one message at a time through the CLI or the FastAPI endpoint.
+Both use the same agent loop and MCP tools.
 
 ## Setup and execution
 
@@ -87,6 +87,38 @@ Windows interpreter for installation and execution:
 The Ollama requirements are the same. Ingestion is required for documentation
 search, not for ordinary file inspection.
 
+### HTTP chat
+
+With Ollama running, start the local HTTP server:
+
+```sh
+./.venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port 8000
+```
+
+On Windows, use `.\.venv\Scripts\python.exe` with the same arguments.
+In a browser, open [the interactive API docs](http://127.0.0.1:8000/docs)
+and select **Try it out** under **POST /chat**. Opening `/chat` directly
+sends a GET request and returns HTTP 405. From a terminal, run:
+
+```sh
+curl -sS http://127.0.0.1:8000/chat \
+  -H 'Content-Type: application/json' \
+  --data '{"message":"Read README.md and explain what this project does."}'
+```
+
+Send a non-blank string `message`. Example response:
+
+```json
+{
+  "answer": "This project is an educational software engineering assistant.",
+  "tools_used": ["read_file"]
+}
+```
+
+`tools_used` lists each successfully used tool once, in order of first success.
+A direct answer returns an empty list. Invalid requests return HTTP 422, and
+fatal agent failures return HTTP 500. Each request starts a fresh agent run.
+
 ### Models and storage
 
 The conversational model defaults to `qwen3:8b`; `OLLAMA_MODEL` overrides it.
@@ -98,14 +130,11 @@ not necessarily offline. The persistent index is in Git-ignored `chroma_db/`.
 ## Architecture and tool safety
 
 ```text
-User -> manual agent loop -> Qwen through Ollama
-              |                    |
-              |              chooses an action
-              v                    |
-         MCP client <--------------+
-              |
-              v
-         MCP server -> existing Python tool -> observation -> agent loop
+User -> CLI or FastAPI -> manual agent loop -> Qwen through Ollama
+                               ^
+                               | tool decision and observation
+                               v
+                          MCP client -> MCP server -> Python tool
 ```
 
 The MCP client discovers tool names, descriptions, and schemas from the server.
@@ -173,6 +202,6 @@ Detailed historical explanations and additional protocol examples are in
 - [x] 13: Tool-calling safeguards.
 - [x] 14–16: MCP server, tool adapters, and standalone client.
 - [x] 17: Agent tools through MCP.
-- [ ] 18: FastAPI interface.
+- [x] 18: FastAPI interface.
 - [ ] 19: Agent behavior evaluations.
 - [ ] 20: LangGraph version for comparison with the manual loop.
