@@ -44,16 +44,23 @@ def script(monkeypatch, *responses):
     monkeypatch.setattr(agent, "chat", chat)
 
 
-def evaluate(case_id):
-    return asyncio.run(run_case(CASES_BY_ID[case_id]))
+@pytest.fixture(params=["manual", "langgraph"])
+def engine(request):
+    return request.param
+
+
+def evaluate(case_id, engine="manual"):
+    return asyncio.run(run_case(CASES_BY_ID[case_id], engine=engine))
 
 
 @pytest.mark.parametrize(("answer", "passed"), [("4", True), ("14", False)])
-def test_direct_answer_and_cli_exit_code(monkeypatch, capsys, answer, passed):
+def test_direct_answer_and_cli_exit_code(monkeypatch, capsys, answer, passed, engine):
     monkeypatch.setenv("OLLAMA_MODEL", "evaluation-model")
     script(monkeypatch, final(answer))
-    assert cli.main(["--case", "direct"]) == int(not passed)
+    flags = ["--engine", engine] if engine == "langgraph" else []
+    assert cli.main(["--case", "direct", *flags]) == int(not passed)
     output = capsys.readouterr().out
+    assert f"Agent engine: {engine}" in output
     assert "Ollama model: evaluation-model" in output
     assert "direct (1 steps used)" in output
     assert "Terminal error:" not in output
@@ -90,14 +97,14 @@ def test_retry_duplicate_unexpected_attempt_and_trace_order(monkeypatch):
     ("`rag/retriever.py` defines it.", True),
     ("See rag/retriever.py.bak.", False),
 ])
-def test_code_answer_and_optional_read(monkeypatch, answer, passed):
+def test_code_answer_and_optional_read(monkeypatch, answer, passed, engine):
     script(
         monkeypatch,
         action("search_code", query="def retrieve_chunks("),
         action("read_file", path="rag/retriever.py"),
         final(answer),
     )
-    report = evaluate("code")
+    report = evaluate("code", engine)
     assert report.passed == passed
     assert report.unexpected_attempts == report.excess_attempts == 0
 
@@ -149,11 +156,24 @@ def test_trace_observation_matches_the_bounded_model_evidence(monkeypatch):
     (RuntimeError("Agent stopped after reaching the maximum of 1 steps."), RuntimeError, False),
     (final("rag/retriever.py"), type(None), False),
 ])
-def test_step_limit_requires_successful_call_and_typed_error(monkeypatch, decision, error_type, passed):
+def test_step_limit_requires_successful_call_and_typed_error(monkeypatch, decision, error_type, passed, engine):
     script(monkeypatch, decision)
-    report = evaluate("step-limit")
+    report = evaluate("step-limit", engine)
     assert type(report.error) is error_type
     assert report.passed == passed
+
+
+def test_git_uses_real_status_and_grades_it_for_both_engines(monkeypatch, engine):
+    def answer_after_observation(messages):
+        observation = messages[-1]["content"]
+        data = observation.removeprefix("Observation: Tool git_status returned: ")
+        status = json.JSONDecoder().raw_decode(data)[0]["result"]
+        return final(status)
+
+    script(monkeypatch, action("git_status"), answer_after_observation)
+    report = evaluate("git", engine)
+    assert report.passed, report
+    assert len(report.trace) == 5
 
 
 def test_suite_continues_after_runtime_error(monkeypatch, capsys):
@@ -193,7 +213,7 @@ def test_git_compares_status_columns_with_observation(monkeypatch, status, answe
     ),
 ])
 def test_docs_grades_answer_and_replays_actual_query_at_top_three(
-    monkeypatch, capsys, source, text, answer, hit, passed,
+    monkeypatch, capsys, source, text, answer, hit, passed, engine,
 ):
     from mcp_server import server
     import rag.answer as rag_answer
@@ -237,7 +257,7 @@ def test_docs_grades_answer_and_replays_actual_query_at_top_three(
         return final(answer)
 
     script(monkeypatch, action("search_docs", query=DOCS_QUERY), answer_after_observation)
-    assert cli.main(["--case", "docs"]) == int(not passed)
+    assert cli.main(["--case", "docs", "--engine", engine]) == int(not passed)
     output = capsys.readouterr().out
     assert queries == [DOCS_QUERY, DOCS_QUERY]
     assert f"Top-3 retrieval replay for {DOCS_QUERY!r}" in output

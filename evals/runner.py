@@ -5,9 +5,10 @@ from dataclasses import dataclass, field
 import asyncio
 import json
 import re
-from typing import TYPE_CHECKING
+from typing import Literal, TYPE_CHECKING
 
 from agent.agent import MAX_STEPS, TRUNCATION_MARKER, StepLimitError, run_agent_with_result
+from agent.graph import run_agent_graph
 from agent.trace import RejectedDecision, StepStarted, ToolAttempt, ToolObservation, TraceEvent
 
 if TYPE_CHECKING:
@@ -17,6 +18,8 @@ if TYPE_CHECKING:
 CODE_PROMPT = "Which Python file defines the retrieve_chunks function? Give its repository-relative path."
 DOCS_SOURCE = "documents/README.md"
 DOCS_TOP_K = 3
+
+type Engine = Literal["manual", "langgraph"]
 
 
 @dataclass(frozen=True)
@@ -133,10 +136,11 @@ def _single_error(error: Exception) -> Exception:
     return error
 
 
-async def run_case(case: Case) -> Report:
+async def run_case(case: Case, *, engine: Engine = "manual") -> Report:
     report = Report(case)
+    run = run_agent_graph if engine == "langgraph" else run_agent_with_result
     try:
-        result = await run_agent_with_result(case.prompt, max_steps=case.max_steps, trace=report.trace.append)
+        result = await run(case.prompt, max_steps=case.max_steps, trace=report.trace.append)
         report.answer = result.answer
     except Exception as exc:
         report.error = _single_error(exc)

@@ -1,8 +1,9 @@
 # agentic-rag-mcp
 
 An educational software engineering assistant for learning local LLM inference,
-manual agent loops, retrieval-augmented generation (RAG), and Model Context
-Protocol (MCP). The application uses local models and requires no paid APIs.
+manual and graph-based agent loops, retrieval-augmented generation (RAG), and
+Model Context Protocol (MCP). The application uses local models and requires no
+paid APIs.
 
 ## Current capabilities
 
@@ -16,8 +17,11 @@ separate Ollama call to generate an answer from retrieved passages. Retrieval
 runs when the model selects `search_docs`; ordinary requests do not automatically
 trigger it. The retrieval and grounded-answer commands also work independently.
 
-The agent accepts one message at a time through the CLI or the FastAPI endpoint.
-Both use the same agent loop and MCP tools.
+The CLI and FastAPI endpoint use LangGraph by default. The graph schedules a
+Qwen decision node and an MCP execution node. Both engines share the same
+prompts, tools, and safeguards. Use `main.py --engine manual` to compare the
+original Python loop. Python callers can still use `agent.run_agent`,
+`agent.run_agent_async`, or `agent.run_agent_with_result` for the manual engine.
 
 ## Setup and execution
 
@@ -198,21 +202,25 @@ answers through fresh MCP sessions.
 Run from the repository root with Ollama running and `qwen3:8b` available.
 Set `OLLAMA_MODEL` to select another installed model. Ingest the documents before
 running the full suite or the docs case.
+The evaluation CLI defaults to the manual engine. Both engines use the same
+cases and grading checks.
 
 Linux
 
 ```sh
 ./.venv/bin/python -m rag.ingest documents
-./.venv/bin/python -m evals
-./.venv/bin/python -m evals --case docs
+./.venv/bin/python -m evals --engine manual
+./.venv/bin/python -m evals --engine langgraph
+./.venv/bin/python -m evals --engine langgraph --case docs
 ```
 
 Windows PowerShell
 
 ```powershell
 .\.venv\Scripts\python.exe -m rag.ingest documents
-.\.venv\Scripts\python.exe -m evals
-.\.venv\Scripts\python.exe -m evals --case docs
+.\.venv\Scripts\python.exe -m evals --engine manual
+.\.venv\Scripts\python.exe -m evals --engine langgraph
+.\.venv\Scripts\python.exe -m evals --engine langgraph --case docs
 ```
 
 The case IDs are `direct`, `code`, `docs`, `git`, and `step-limit`. Each report
@@ -239,4 +247,4 @@ Detailed historical explanations and additional protocol examples are in
 - [x] 17: Agent tools through MCP.
 - [x] 18: FastAPI interface.
 - [x] 19: Agent behavior evaluations.
-- [ ] 20: LangGraph version for comparison with the manual loop.
+- [x] 20: LangGraph version for comparison with the manual loop.

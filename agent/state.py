@@ -1,4 +1,4 @@
-"""Explicit state carried through the manual agent loop."""
+"""Explicit state shared by both agent engines."""
 
 from dataclasses import dataclass, field
 

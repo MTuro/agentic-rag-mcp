@@ -429,3 +429,51 @@ ephemeral Chroma collection with fake embeddings and mocked model responses.
 .\.venv\Scripts\python.exe -m pytest tests/test_agent.py tests/test_agent_mcp.py tests/test_rag_tool.py -v
 .\.venv\Scripts\python.exe -m pytest -v
 ```
+
+## Milestone 20 — LangGraph agent workflow
+
+The graph describes how an agent run moves between two nodes. Each node is a
+function that works on shared state. The Qwen node asks the local model for one
+decision and validates it. The MCP node executes one action and adds its result
+to the conversation. The state carries the existing `AgentState`, a pending
+action, and the final answer.
+
+```mermaid
+flowchart TD
+    start([Start]) --> decide[Qwen decision]
+    decide -->|Final answer| finish([End])
+    decide -->|Valid action| tool[MCP execution]
+    decide -->|Rejection and budget remains| decide
+    decide -->|Rejection exhausts budget| finish
+    tool -->|Observation and budget remains| decide
+    tool -->|Observation exhausts budget| finish
+```
+
+An edge schedules the next node. A conditional edge reads the updated state to
+choose the destination. For example, if Qwen asks to read `README.md`, the
+decision node saves that action. The MCP node calls the discovered `read_file`
+tool through the open session and appends a bounded observation. Qwen receives
+that observation on the next decision. If it returns an answer, the graph ends
+and the session closes.
+
+Both engines count Qwen decisions toward the same budget. If the last decision
+requests a valid action, the agent runs it and records its observation before
+raising `StepLimitError`. Recoverable tool errors return to Qwen as observations.
+A fatal model or MCP failure ends the run and closes the session.
+
+The manual engine shows the control flow directly in a Python `while` loop.
+LangGraph makes transitions explicit in a graph and schedules the nodes. It
+adds a dependency and a separate graph state schema. Application code still
+owns Ollama inference, MCP discovery and execution, decision validation,
+duplicate detection, and evidence limits. Hosted tracing is disabled during
+graph invocations.
+
+The chat CLI and `POST /chat` use LangGraph. Run `main.py --engine manual` to
+choose the manual loop. Run both evaluation engines with the same cases,
+after indexing the documentation and starting local Ollama.
+
+```sh
+./.venv/bin/python -m rag.ingest documents
+./.venv/bin/python -m evals --engine langgraph
+./.venv/bin/python -m evals --engine manual
+```

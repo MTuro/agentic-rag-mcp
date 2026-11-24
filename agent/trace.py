@@ -1,4 +1,4 @@
-"""Optional events emitted by one run of the manual agent loop."""
+"""Optional events emitted by either agent engine."""
 
 from dataclasses import dataclass
 from typing import Any

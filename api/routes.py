@@ -3,7 +3,7 @@
 from fastapi import APIRouter
 from pydantic import BaseModel, StrictStr, field_validator
 
-from agent import run_agent_with_result
+from agent.graph import run_agent_graph
 
 
 router = APIRouter()
@@ -27,5 +27,5 @@ class ChatResponse(BaseModel):
 
 @router.post("/chat")
 async def chat(request: ChatRequest) -> ChatResponse:
-    result = await run_agent_with_result(request.message)
+    result = await run_agent_graph(request.message)
     return ChatResponse(answer=result.answer, tools_used=result.tools_used)

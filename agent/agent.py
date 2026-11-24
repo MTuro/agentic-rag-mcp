@@ -1,8 +1,10 @@
-"""A small, explicit agent loop built without an agent framework."""
+"""The manual agent loop and operations shared with the graph workflow."""
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from copy import deepcopy
+from dataclasses import dataclass
 import json
 import logging
 from typing import Any
@@ -45,6 +47,17 @@ logger = logging.getLogger(__name__)
 
 MAX_OBSERVATION_LENGTH = 8_000
 TRUNCATION_MARKER = "\n[tool result truncated]"
+
+
+type ToolExecutor = Callable[[str, dict[str, Any]], Awaitable[Any]]
+type TraceCallback = Callable[[TraceEvent], None]
+
+
+@dataclass(frozen=True)
+class ToolAction:
+    name: str
+    arguments: dict[str, Any]
+    signature: str
 
 
 class ToolExecutionError(Exception):
@@ -116,11 +129,10 @@ async def run_agent_with_result(
     *,
     max_steps: int = MAX_STEPS,
     tool_registry: ToolRegistry | None = None,
-    trace: Callable[[TraceEvent], None] | None = None,
+    trace: TraceCallback | None = None,
 ) -> AgentResult:
     """Discover tools and run the loop, optionally emitting synchronous trace events."""
-    if isinstance(max_steps, bool) or not isinstance(max_steps, int) or max_steps <= 0:
-        raise ValueError("max_steps must be a positive integer.")
+    validate_max_steps(max_steps)
 
     if tool_registry is not None:
         async def execute_local(name: str, arguments: dict[str, Any]) -> Any:
@@ -131,6 +143,18 @@ async def run_agent_with_result(
 
         return await _run_loop(prompt, max_steps, tool_registry.model_definitions(), execute_local, trace)
 
+    async with mcp_tools() as (definitions, execute):
+        return await _run_loop(prompt, max_steps, definitions, execute, trace)
+
+
+def validate_max_steps(max_steps: int) -> None:
+    if isinstance(max_steps, bool) or not isinstance(max_steps, int) or max_steps <= 0:
+        raise ValueError("max_steps must be a positive integer.")
+
+
+@asynccontextmanager
+async def mcp_tools() -> AsyncIterator[tuple[list[dict[str, Any]], ToolExecutor]]:
+    """Discover and execute tools through a single MCP session."""
     async with connect() as client:
         discovery = await client.list_tools()
         definitions = [
@@ -148,18 +172,11 @@ async def run_agent_with_result(
                 raise ToolExecutionError(evidence)
             return evidence
 
-        return await _run_loop(prompt, max_steps, definitions, execute_mcp, trace)
+        yield definitions, execute_mcp
 
 
-async def _run_loop(
-    prompt: str,
-    max_steps: int,
-    definitions: list[dict[str, Any]],
-    execute: Callable[[str, dict[str, Any]], Awaitable[Any]],
-    trace: Callable[[TraceEvent], None] | None,
-) -> AgentResult:
-    """Share the same decisions and safeguards across both execution paths."""
-    state = AgentState(
+def initial_state(prompt: str, max_steps: int, definitions: list[dict[str, Any]]) -> AgentState:
+    return AgentState(
         messages=[
             {"role": "system", "content": _build_system_prompt(definitions)},
             {"role": "user", "content": prompt},
@@ -167,77 +184,116 @@ async def _run_loop(
         max_steps=max_steps,
     )
 
-    while state.current_step < state.max_steps:
-        state.current_step += 1
-        if trace is not None:
-            trace(StepStarted(state.current_step))
-        response = await asyncio.to_thread(chat, state.messages)
-        state.messages.append({"role": "assistant", "content": response})
-        rejected = False
-        succeeded = False
-        try:
-            decision = _parse_decision(response)
-            decision_type = decision.get("type")
 
-            if decision_type == "final":
-                answer = decision.get("answer")
-                if not isinstance(answer, str) or not answer.strip():
-                    raise ValueError(
-                        'A final decision requires a non-empty answer. Return '
-                        '{"type": "final", "answer": "your answer"} with your answer as a string.'
-                    )
-                if trace is not None:
-                    trace(FinalDecision(state.current_step, answer))
-                return AgentResult(answer=answer, tools_used=state.tools_used)
+def step_limit_error(state: AgentState) -> StepLimitError:
+    return StepLimitError(f"Agent stopped after reaching the maximum of {state.max_steps} steps.")
 
-            if decision_type != "action":
-                raise ValueError(f"Unknown decision type: {decision_type!r}.")
 
-            tool_name = decision.get("tool")
-            arguments = decision.get("arguments")
-            if not isinstance(tool_name, str) or not tool_name:
-                raise ValueError("An action decision requires a non-empty tool name.")
-            if not isinstance(arguments, dict):
-                raise ValueError("An action decision requires an arguments object.")
+def _validate_decision(
+    state: AgentState, response: str, trace: TraceCallback | None,
+) -> ToolAction | str:
+    decision = _parse_decision(response)
+    decision_type = decision.get("type")
 
-            signature = _tool_call_signature(decision)
-            if trace is not None:
-                trace(ToolAttempt(state.current_step, tool_name, deepcopy(arguments)))
-            if signature in state.successful_tool_calls:
-                raise ValueError(
-                    "This successful tool call was already made; use its existing "
-                    "evidence or choose another action."
-                )
+    if decision_type == "final":
+        answer = decision.get("answer")
+        if not isinstance(answer, str) or not answer.strip():
+            raise ValueError(
+                'A final decision requires a non-empty answer. Return '
+                '{"type": "final", "answer": "your answer"} with your answer as a string.'
+            )
+        return answer
 
-        except ValueError as exc:
-            rejected = True
-            observation = f"Error: {exc}"
-        else:
-            logger.info("[tool call] %s %s", tool_name, json.dumps(arguments, ensure_ascii=False))
-            try:
-                result = await execute(tool_name, arguments)
-            except ToolExecutionError as exc:
-                observation = f"Error: {exc}"
-            else:
-                succeeded = True
-                observation = f"Tool {tool_name} returned: {result}"
-                state.successful_tool_calls.add(signature)
-                if tool_name not in state.tools_used:
-                    state.tools_used.append(tool_name)
+    if decision_type != "action":
+        raise ValueError(f"Unknown decision type: {decision_type!r}.")
 
-        observation = _limit_observation(observation)
-        if trace is not None:
-            if rejected:
-                trace(RejectedDecision(state.current_step, _limit_observation(response), observation))
-            else:
-                trace(ToolObservation(state.current_step, observation, succeeded))
-        logger.info("[observation] %s", observation)
-        state.observations.append(observation)
-        state.messages.append(
-            {
-                "role": "user",
-                "content": f"Observation: {observation}. Decide what to do next.",
-            }
+    name = decision.get("tool")
+    arguments = decision.get("arguments")
+    if not isinstance(name, str) or not name:
+        raise ValueError("An action decision requires a non-empty tool name.")
+    if not isinstance(arguments, dict):
+        raise ValueError("An action decision requires an arguments object.")
+
+    signature = _tool_call_signature(decision)
+    if trace is not None:
+        trace(ToolAttempt(state.current_step, name, deepcopy(arguments)))
+    if signature in state.successful_tool_calls:
+        raise ValueError(
+            "This successful tool call was already made; use its existing "
+            "evidence or choose another action."
         )
+    return ToolAction(name, arguments, signature)
 
-    raise StepLimitError(f"Agent stopped after reaching the maximum of {state.max_steps} steps.")
+
+async def decide(state: AgentState, trace: TraceCallback | None) -> ToolAction | str | None:
+    """Consume one step and return an action, an answer, or a recorded rejection."""
+    state.current_step += 1
+    if trace is not None:
+        trace(StepStarted(state.current_step))
+    response = await asyncio.to_thread(chat, state.messages)
+    state.messages.append({"role": "assistant", "content": response})
+
+    try:
+        decision = _validate_decision(state, response, trace)
+        if isinstance(decision, str) and trace is not None:
+            trace(FinalDecision(state.current_step, decision))
+    except ValueError as exc:
+        observation = _limit_observation(f"Error: {exc}")
+        if trace is not None:
+            trace(RejectedDecision(state.current_step, _limit_observation(response), observation))
+        _add_observation(state, observation)
+        return None
+
+    return decision
+
+
+async def execute_action(
+    state: AgentState, action: ToolAction, execute: ToolExecutor, trace: TraceCallback | None,
+) -> None:
+    """Invoke one tool and feed its bounded result or recoverable error to Qwen."""
+    logger.info("[tool call] %s %s", action.name, json.dumps(action.arguments, ensure_ascii=False))
+    try:
+        result = await execute(action.name, action.arguments)
+    except ToolExecutionError as exc:
+        succeeded = False
+        observation = f"Error: {exc}"
+    else:
+        succeeded = True
+        observation = f"Tool {action.name} returned: {result}"
+        state.successful_tool_calls.add(action.signature)
+        if action.name not in state.tools_used:
+            state.tools_used.append(action.name)
+
+    observation = _limit_observation(observation)
+    if trace is not None:
+        trace(ToolObservation(state.current_step, observation, succeeded))
+    _add_observation(state, observation)
+
+
+def _add_observation(state: AgentState, observation: str) -> None:
+    logger.info("[observation] %s", observation)
+    state.observations.append(observation)
+    state.messages.append(
+        {
+            "role": "user",
+            "content": f"Observation: {observation}. Decide what to do next.",
+        }
+    )
+
+
+async def _run_loop(
+    prompt: str,
+    max_steps: int,
+    definitions: list[dict[str, Any]],
+    execute: ToolExecutor,
+    trace: TraceCallback | None,
+) -> AgentResult:
+    state = initial_state(prompt, max_steps, definitions)
+    while state.current_step < state.max_steps:
+        decision = await decide(state, trace)
+        if isinstance(decision, str):
+            return AgentResult(answer=decision, tools_used=state.tools_used)
+        if decision is not None:
+            await execute_action(state, decision, execute, trace)
+
+    raise step_limit_error(state)

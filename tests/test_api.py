@@ -1,4 +1,4 @@
-"""HTTP contract tests with deterministic model decisions and real MCP stdio."""
+"""HTTP contract tests through LangGraph with deterministic Qwen decisions and real MCP stdio."""
 
 import json
 
@@ -61,7 +61,7 @@ async def test_chat_reports_successful_tools_in_first_use_order(client, monkeypa
     assert "Error:" in observations[1]
     assert "educational software engineering assistant" in observations[2]
     assert "agent/agent.py" in observations[3]
-    assert "from agent import run_agent" in observations[4]
+    assert "run_agent_graph(prompt)" in observations[4]
 
 
 @pytest.mark.parametrize("body", [
@@ -76,7 +76,7 @@ async def test_chat_rejects_invalid_request_without_running_agent(client, monkey
     async def unexpected_run(*args):
         pytest.fail("Invalid requests must not run the agent.")
 
-    monkeypatch.setattr("api.routes.run_agent_with_result", unexpected_run)
+    monkeypatch.setattr("api.routes.run_agent_graph", unexpected_run)
     response = await client.post("/chat", content=body, headers={"Content-Type": "application/json"})
 
     assert response.status_code == 422

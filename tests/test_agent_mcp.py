@@ -1,5 +1,6 @@
 """MCP-backed loop checks; model decisions are deterministic, never real inference."""
 
+import asyncio
 from copy import deepcopy
 import json
 import subprocess
@@ -8,9 +9,13 @@ from types import SimpleNamespace
 
 import pytest
 from mcp import Client
+import mcp.client.stdio as stdio
 from mcp.types import CallToolResult, TextContent
 
 import agent.agent as agent
+from agent.graph import run_agent_graph
+from agent.state import AgentResult
+from agent.trace import FinalDecision, RejectedDecision, StepStarted, ToolAttempt, ToolObservation
 
 
 def action(name="remote_echo", **arguments):
@@ -186,8 +191,9 @@ assert not any(name in sys.modules for name in (
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.parametrize("run", [agent.run_agent_with_result, run_agent_graph])
 @pytest.mark.parametrize("stage", ["startup", "discovery", "transport", "model", "max_steps"])
-def test_fatal_failures_close_session(monkeypatch, remote, stage):
+def test_fatal_failures_close_session(monkeypatch, remote, stage, run):
     scripted_model(monkeypatch, [action(text="x")])
     failure = ConnectionError(stage)
 
@@ -205,8 +211,8 @@ def test_fatal_failures_close_session(monkeypatch, remote, stage):
             raise failure
         monkeypatch.setattr(agent, "chat", fail_chat)
 
-    with pytest.raises(RuntimeError if stage == "max_steps" else ConnectionError) as caught:
-        agent.run_agent("Inspect", max_steps=1)
+    with pytest.raises(agent.StepLimitError if stage == "max_steps" else ConnectionError) as caught:
+        asyncio.run(run("Inspect", max_steps=1))
     if stage != "max_steps":
         assert caught.value is failure
     assert remote.closed is (stage != "startup")
@@ -220,6 +226,104 @@ def test_real_stdio_search_and_read(monkeypatch):
     assert agent.run_agent("Inspect the MCP client") == "Done"
     assert "mcp_client/client.py" in messages[1][-1]["content"]
     assert "StdioServerParameters" in messages[2][-1]["content"]
+
+
+@pytest.mark.parametrize(("flags", "engine"), [([], "langgraph"), (["--engine", "manual"], "manual")])
+def test_cli_selects_engine(monkeypatch, capsys, flags, engine):
+    import main
+
+    def manual(prompt):
+        assert engine == "manual" and prompt == "Hello"
+        return "Manual answer"
+
+    async def graph(prompt):
+        assert engine == "langgraph" and prompt == "Hello"
+        return AgentResult("Graph answer", [])
+
+    monkeypatch.setattr("builtins.input", lambda _: "Hello")
+    monkeypatch.setattr(main, "run_agent", manual)
+    monkeypatch.setattr(main, "run_agent_graph", graph)
+    main.main(flags)
+    assert capsys.readouterr().out == ("Graph answer\n" if engine == "langgraph" else "Manual answer\n")
+
+
+def test_graph_direct_answer_disables_hosted_tracing(monkeypatch):
+    from langsmith.utils import tracing_is_enabled
+
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+
+    def model(messages):
+        assert not tracing_is_enabled()
+        assert '"name": "search_docs"' in messages[0]["content"]
+        return FINAL
+
+    monkeypatch.setattr(agent, "chat", model)
+    trace = []
+    assert asyncio.run(run_agent_graph("Hello", max_steps=1, trace=trace.append)) == AgentResult("Done", [])
+    assert trace == [StepStarted(1), FinalDecision(1, "Done")]
+    assert tracing_is_enabled()
+
+
+def test_graph_recovers_and_reports_successful_tools_in_order(monkeypatch):
+    search = action("search_code", query="def connect(")
+    messages = scripted_model(monkeypatch, [
+        action("unknown_tool"), search, search,
+        action("read_file", path="mcp_client/client.py"), FINAL,
+    ])
+    trace = []
+    result = asyncio.run(run_agent_graph("Inspect the MCP client", trace=trace.append))
+
+    assert result == AgentResult("Done", ["search_code", "read_file"])
+    assert [(event.step, type(event)) for event in trace] == [
+        (1, StepStarted), (1, ToolAttempt), (1, ToolObservation),
+        (2, StepStarted), (2, ToolAttempt), (2, ToolObservation),
+        (3, StepStarted), (3, ToolAttempt), (3, RejectedDecision),
+        (4, StepStarted), (4, ToolAttempt), (4, ToolObservation),
+        (5, StepStarted), (5, FinalDecision),
+    ]
+    assert trace[2].succeeded is False
+    assert "unknown_tool" in messages[1][-1]["content"]
+    assert "mcp_client/client.py" in messages[2][-1]["content"]
+    assert "already made" in messages[3][-1]["content"]
+    assert "StdioServerParameters" in messages[4][-1]["content"]
+
+
+def test_graph_budget_counts_decisions_instead_of_nodes(monkeypatch, remote):
+    max_steps = 16
+    scripted_model(monkeypatch, [action(text=str(step)) for step in range(max_steps)])
+    trace = []
+    with pytest.raises(agent.StepLimitError, match="maximum of 16 steps"):
+        asyncio.run(run_agent_graph("Inspect", max_steps=max_steps, trace=trace.append))
+
+    assert remote.discovery_calls == 1 and remote.closed
+    assert len(remote.calls) == max_steps
+    assert trace[-1] == ToolObservation(max_steps, "Tool remote_echo returned: echo evidence", True)
+
+
+def test_graph_reaps_real_mcp_process_after_model_failure(monkeypatch):
+    processes = []
+    spawn = stdio._create_platform_compatible_process
+    failure = ConnectionError("Ollama unavailable")
+
+    async def record_process(*args, **kwargs):
+        process = await spawn(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    def model(messages):
+        assert "search_code" in messages[0]["content"]
+        raise failure
+
+    monkeypatch.setattr(stdio, "_create_platform_compatible_process", record_process)
+    monkeypatch.setattr(agent, "chat", model)
+
+    with pytest.RaisesGroup(
+        pytest.RaisesExc(ConnectionError, check=lambda exc: exc is failure),
+        flatten_subgroups=True,
+    ):
+        asyncio.run(run_agent_graph("Inspect"))
+
+    assert len(processes) == 1 and processes[0].returncode is not None
 
 
 @pytest.mark.anyio
