@@ -188,6 +188,41 @@ For a real model check, run the CLI and inspect its tool observations. For RAG,
 index `documents/` first, then use `rag.query` and `rag.answer` as shown above.
 Passing automated tests does not establish that local Ollama inference works.
 
+## Agent evaluations
+
+Unit tests check individual behaviors. Integration tests check components
+working together, for example an agent calling a real MCP server with scripted
+model decisions. Live evaluations measure the local model's tool choices and
+answers through fresh MCP sessions.
+
+Run from the repository root with Ollama running and `qwen3:8b` available.
+Set `OLLAMA_MODEL` to select another installed model. Ingest the documents before
+running the full suite or the docs case.
+
+Linux
+
+```sh
+./.venv/bin/python -m rag.ingest documents
+./.venv/bin/python -m evals
+./.venv/bin/python -m evals --case docs
+```
+
+Windows PowerShell
+
+```powershell
+.\.venv\Scripts\python.exe -m rag.ingest documents
+.\.venv\Scripts\python.exe -m evals
+.\.venv\Scripts\python.exe -m evals --case docs
+```
+
+The case IDs are `direct`, `code`, `docs`, `git`, and `step-limit`. Each report
+includes the answer or terminal error, steps used, ordered tool attempts,
+observations, and checks. The docs case replays the actual `search_docs` query
+at Top-3 and prints the retrieved excerpts and any supporting rank. The runner
+returns exit status 0 when all selected cases pass and 1 when any fails.
+Compare factual claims, file paths, and quotations with the displayed evidence
+to catch unsupported claims beyond the automated checks.
+
 ## Learning roadmap
 
 The checklist describes implemented scope, not verification of your environment.
@@ -203,5 +238,5 @@ Detailed historical explanations and additional protocol examples are in
 - [x] 14–16: MCP server, tool adapters, and standalone client.
 - [x] 17: Agent tools through MCP.
 - [x] 18: FastAPI interface.
-- [ ] 19: Agent behavior evaluations.
+- [x] 19: Agent behavior evaluations.
 - [ ] 20: LangGraph version for comparison with the manual loop.

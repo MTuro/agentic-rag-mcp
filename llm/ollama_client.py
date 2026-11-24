@@ -9,10 +9,14 @@ import ollama
 DEFAULT_MODEL = "qwen3:8b"
 
 
+def selected_model() -> str:
+    """Return the model used for local chat requests."""
+    return os.getenv("OLLAMA_MODEL", DEFAULT_MODEL)
+
+
 def chat(messages: Sequence[Mapping[str, str]]) -> str:
     """Send chat messages to Ollama and return the assistant text."""
-    model = os.getenv("OLLAMA_MODEL", DEFAULT_MODEL)
-    response = ollama.chat(model=model, messages=messages)
+    response = ollama.chat(model=selected_model(), messages=messages)
     content = response.message.content
 
     if not content:

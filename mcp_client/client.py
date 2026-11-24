@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -20,6 +21,11 @@ def connect(server: StdioServerParameters | None = None) -> Client:
             command=sys.executable,
             args=["-m", "mcp_server.server"],
             cwd=str(Path(__file__).resolve().parents[1]),
+            env={
+                key: os.environ[key]
+                for key in ("PROJECT_ROOT", "OLLAMA_MODEL", "OLLAMA_HOST")
+                if key in os.environ
+            },
         )
     return Client(server, mode="legacy")
 

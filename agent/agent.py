@@ -2,11 +2,15 @@
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from copy import deepcopy
 import json
 import logging
 from typing import Any
 
 from agent.state import MAX_STEPS, AgentResult, AgentState
+from agent.trace import (
+    FinalDecision, RejectedDecision, StepStarted, ToolAttempt, ToolObservation, TraceEvent,
+)
 from llm.ollama_client import chat
 from mcp_client.client import connect
 from tools.registry import ToolRegistry
@@ -45,6 +49,10 @@ TRUNCATION_MARKER = "\n[tool result truncated]"
 
 class ToolExecutionError(Exception):
     """A recoverable tool failure, distinct from a broken MCP connection."""
+
+
+class StepLimitError(RuntimeError):
+    """The agent used its entire decision budget without giving a final answer."""
 
 
 def _build_system_prompt(definitions: list[dict[str, Any]]) -> str:
@@ -108,8 +116,9 @@ async def run_agent_with_result(
     *,
     max_steps: int = MAX_STEPS,
     tool_registry: ToolRegistry | None = None,
+    trace: Callable[[TraceEvent], None] | None = None,
 ) -> AgentResult:
-    """Discover MCP tools by default, or use an explicitly supplied local registry."""
+    """Discover tools and run the loop, optionally emitting synchronous trace events."""
     if isinstance(max_steps, bool) or not isinstance(max_steps, int) or max_steps <= 0:
         raise ValueError("max_steps must be a positive integer.")
 
@@ -120,7 +129,7 @@ async def run_agent_with_result(
             except Exception as exc:
                 raise ToolExecutionError(str(exc)) from exc
 
-        return await _run_loop(prompt, max_steps, tool_registry.model_definitions(), execute_local)
+        return await _run_loop(prompt, max_steps, tool_registry.model_definitions(), execute_local, trace)
 
     async with connect() as client:
         discovery = await client.list_tools()
@@ -139,7 +148,7 @@ async def run_agent_with_result(
                 raise ToolExecutionError(evidence)
             return evidence
 
-        return await _run_loop(prompt, max_steps, definitions, execute_mcp)
+        return await _run_loop(prompt, max_steps, definitions, execute_mcp, trace)
 
 
 async def _run_loop(
@@ -147,6 +156,7 @@ async def _run_loop(
     max_steps: int,
     definitions: list[dict[str, Any]],
     execute: Callable[[str, dict[str, Any]], Awaitable[Any]],
+    trace: Callable[[TraceEvent], None] | None,
 ) -> AgentResult:
     """Share the same decisions and safeguards across both execution paths."""
     state = AgentState(
@@ -159,8 +169,12 @@ async def _run_loop(
 
     while state.current_step < state.max_steps:
         state.current_step += 1
+        if trace is not None:
+            trace(StepStarted(state.current_step))
         response = await asyncio.to_thread(chat, state.messages)
         state.messages.append({"role": "assistant", "content": response})
+        rejected = False
+        succeeded = False
         try:
             decision = _parse_decision(response)
             decision_type = decision.get("type")
@@ -172,6 +186,8 @@ async def _run_loop(
                         'A final decision requires a non-empty answer. Return '
                         '{"type": "final", "answer": "your answer"} with your answer as a string.'
                     )
+                if trace is not None:
+                    trace(FinalDecision(state.current_step, answer))
                 return AgentResult(answer=answer, tools_used=state.tools_used)
 
             if decision_type != "action":
@@ -185,6 +201,8 @@ async def _run_loop(
                 raise ValueError("An action decision requires an arguments object.")
 
             signature = _tool_call_signature(decision)
+            if trace is not None:
+                trace(ToolAttempt(state.current_step, tool_name, deepcopy(arguments)))
             if signature in state.successful_tool_calls:
                 raise ValueError(
                     "This successful tool call was already made; use its existing "
@@ -192,6 +210,7 @@ async def _run_loop(
                 )
 
         except ValueError as exc:
+            rejected = True
             observation = f"Error: {exc}"
         else:
             logger.info("[tool call] %s %s", tool_name, json.dumps(arguments, ensure_ascii=False))
@@ -200,12 +219,18 @@ async def _run_loop(
             except ToolExecutionError as exc:
                 observation = f"Error: {exc}"
             else:
+                succeeded = True
                 observation = f"Tool {tool_name} returned: {result}"
                 state.successful_tool_calls.add(signature)
                 if tool_name not in state.tools_used:
                     state.tools_used.append(tool_name)
 
         observation = _limit_observation(observation)
+        if trace is not None:
+            if rejected:
+                trace(RejectedDecision(state.current_step, _limit_observation(response), observation))
+            else:
+                trace(ToolObservation(state.current_step, observation, succeeded))
         logger.info("[observation] %s", observation)
         state.observations.append(observation)
         state.messages.append(
@@ -215,4 +240,4 @@ async def _run_loop(
             }
         )
 
-    raise RuntimeError(f"Agent stopped after reaching the maximum of {state.max_steps} steps.")
+    raise StepLimitError(f"Agent stopped after reaching the maximum of {state.max_steps} steps.")
